@@ -1,0 +1,15 @@
+{
+  "name": "ai-chatroom",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @chatroom/server dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  }
+}

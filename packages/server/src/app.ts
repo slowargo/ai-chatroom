@@ -1,0 +1,314 @@
+import { Hono } from 'hono'
+import { createMiddleware } from 'hono/factory'
+import { streamSSE } from 'hono/streaming'
+import { readFile } from 'node:fs/promises'
+import { extname, join, normalize } from 'node:path'
+import type { Hub } from './hub.js'
+import type { Llm } from './llm.js'
+import { ConflictError, type Store } from './store.js'
+import type { ChatEvent, Participant, ParticipantType } from './types.js'
+
+export interface AppDeps {
+  store: Store
+  hub: Hub
+  llm: Llm
+  /** long-poll window; the timeout is a transport liveness detail invisible to agents */
+  pollWindowMs?: number
+  /** absolute path of the built web UI; omit to disable static serving */
+  webDist?: string
+}
+
+type Env = { Variables: { me: Participant } }
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript',
+  '.css': 'text/css',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+}
+
+function publicParticipant(p: Participant) {
+  const { token: _token, ...rest } = p
+  return rest
+}
+
+export function createApp(deps: AppDeps) {
+  const { store, hub, llm } = deps
+  const pollWindowMs = deps.pollWindowMs ?? 25_000
+  const app = new Hono<Env>()
+
+  const emit = (roomId: string, events: ChatEvent[]) => {
+    hub.publish(roomId, events)
+    return events
+  }
+
+  const auth = createMiddleware<Env>(async (c, next) => {
+    const token =
+      c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? c.req.query('token')
+    if (!token) return c.json({ error: 'missing token' }, 401)
+    const me = store.getParticipantByToken(token)
+    if (!me) return c.json({ error: 'invalid token' }, 401)
+    const roomId = c.req.param('id')
+    if (roomId && me.room_id !== roomId) return c.json({ error: 'token is for another room' }, 403)
+    c.set('me', me)
+    await next()
+  })
+
+  app.onError((err, c) => {
+    if (err instanceof ConflictError) return c.json({ error: err.message }, 409)
+    console.error(err)
+    return c.json({ error: 'internal error' }, 500)
+  })
+
+  // ---- rooms ----
+
+  app.post('/api/rooms', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { title?: string }
+    return c.json(store.createRoom(body.title ?? ''), 201)
+  })
+
+  app.get('/api/rooms', (c) => c.json(store.listRooms()))
+
+  app.get('/api/rooms/:id', (c) => {
+    const room = store.getRoom(c.req.param('id'))
+    return room ? c.json(room) : c.json({ error: 'room not found' }, 404)
+  })
+
+  // ---- join / members ----
+
+  app.post('/api/rooms/:id/join', async (c) => {
+    const roomId = c.req.param('id')
+    if (!store.getRoom(roomId)) return c.json({ error: 'room not found' }, 404)
+    const body = (await c.req.json().catch(() => ({}))) as {
+      nickname?: string
+      type?: ParticipantType
+      persona_id?: string
+      token?: string
+    }
+    const type = body.type ?? 'agent'
+    if (type !== 'human' && type !== 'agent') return c.json({ error: 'invalid type' }, 400)
+    const persona = body.persona_id ? store.getPersona(body.persona_id) : undefined
+    if (body.persona_id && !persona) return c.json({ error: 'persona not found' }, 404)
+
+    let nickname = body.nickname?.trim()
+    if (!nickname && !body.token) {
+      const taken = store.listParticipants(roomId).map((p) => p.nickname)
+      const generated = persona ? await llm.genNickname(persona.name, persona.system_prompt, taken) : null
+      const base = generated ?? `${persona?.name ?? type}-${Math.random().toString(36).slice(2, 6)}`
+      nickname = taken.includes(base) ? `${base}-${Math.random().toString(36).slice(2, 6)}` : base
+    }
+
+    const { participant, rejoined, events } = store.joinRoom(roomId, {
+      nickname: nickname ?? '',
+      type,
+      persona_id: persona?.id ?? null,
+      token: body.token ?? null,
+    })
+    emit(roomId, events)
+    return c.json(
+      {
+        ...publicParticipant(participant),
+        token: participant.token,
+        rejoined,
+        persona: persona ?? (participant.persona_id ? store.getPersona(participant.persona_id) : null) ?? null,
+      },
+      rejoined ? 200 : 201,
+    )
+  })
+
+  app.get('/api/rooms/:id/members', auth, (c) => {
+    const roomId = c.req.param('id')
+    const online = hub.online(roomId)
+    return c.json(
+      store.listParticipants(roomId).map((p) => ({
+        ...publicParticipant(p),
+        online: online.has(p.uid),
+        persona_name: p.persona_id ? store.getPersona(p.persona_id)?.name ?? null : null,
+      })),
+    )
+  })
+
+  // ---- messages / events ----
+
+  app.post('/api/rooms/:id/messages', auth, async (c) => {
+    const roomId = c.req.param('id')
+    const me = c.get('me')
+    const body = (await c.req.json().catch(() => ({}))) as {
+      text?: string
+      in_reply_to?: string
+      mentions?: string[]
+    }
+    const text = body.text?.trim()
+    if (!text) return c.json({ error: 'text is required' }, 400)
+    const mentions = store.resolveMentions(roomId, text, body.mentions)
+    const events = emit(
+      roomId,
+      store.appendEvent(roomId, {
+        kind: 'message',
+        sender_uid: me.uid,
+        text,
+        in_reply_to: body.in_reply_to ?? null,
+        mentions,
+      }),
+    )
+    maybeDecorateTitle(roomId, me, text)
+    const msg = events[0]
+    return c.json({ msg_id: msg.msg_id, seq: msg.seq, mentions: msg.mentions, muted: msg.muted }, 201)
+  })
+
+  function maybeDecorateTitle(roomId: string, sender: Participant, text: string) {
+    if (sender.type !== 'human') return
+    const room = store.getRoom(roomId)
+    if (!room || room.title !== '') return
+    void llm
+      .genTitle(store.recentMessages(roomId, 6))
+      .then((generated) => {
+        const current = store.getRoom(roomId)
+        if (!current || current.title !== '') return
+        const title = generated ?? (text.length > 24 ? `${text.slice(0, 24)}…` : text)
+        store.setRoomTitle(roomId, title)
+        emit(roomId, store.appendEvent(roomId, { kind: 'room_updated', payload: { title } }))
+      })
+      .catch((err) => console.warn('[llm] title decoration failed:', err))
+  }
+
+  app.get('/api/rooms/:id/events', auth, (c) => {
+    const roomId = c.req.param('id')
+    const after = Number(c.req.query('after') ?? 0)
+    const limit = Math.min(Number(c.req.query('limit') ?? 200), 500)
+    const events = store.listEventsAnnotated(roomId, after, limit, c.get('me').uid)
+    return c.json({ events, has_more: events.length === limit })
+  })
+
+  app.post('/api/rooms/:id/ack', auth, async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { seq?: number }
+    if (typeof body.seq !== 'number') return c.json({ error: 'seq is required' }, 400)
+    return c.json({ last_acked_seq: store.ack(c.get('me').uid, body.seq) })
+  })
+
+  // ---- agent long-poll ----
+
+  app.get('/api/rooms/:id/wait', auth, async (c) => {
+    const roomId = c.req.param('id')
+    const me = c.get('me')
+    const after = c.req.query('after') !== undefined ? Number(c.req.query('after')) : me.last_acked_seq
+    const windowMs = Math.min(Number(c.req.query('window_ms') ?? pollWindowMs), 60_000)
+
+    const untrack = hub.track(roomId, me.uid)
+    const ac = new AbortController()
+    const onClientGone = () => ac.abort()
+    c.req.raw.signal.addEventListener('abort', onClientGone)
+    try {
+      // subscribe before checking the DB so no event slips between check and wait
+      const live = hub.waitFor(roomId, (ev) => store.wakes(ev, me.uid), windowMs, ac.signal)
+      let woke = store.findWakeEvent(roomId, me.uid, after) !== undefined
+      if (!woke) woke = await live
+      ac.abort()
+      if (!woke) return c.json({ woke: false, cursor: after, latest_seq: after, events: [] })
+      const events = store.listEventsAnnotated(roomId, after, 500, me.uid)
+      return c.json({
+        woke: true,
+        cursor: after,
+        latest_seq: events.at(-1)?.seq ?? after,
+        has_more: events.length === 500,
+        events,
+      })
+    } finally {
+      c.req.raw.signal.removeEventListener('abort', onClientGone)
+      untrack()
+    }
+  })
+
+  // ---- web UI live stream (SSE, full firehose) ----
+
+  app.get('/api/rooms/:id/stream', auth, (c) => {
+    const roomId = c.req.param('id')
+    const me = c.get('me')
+    let after = Number(c.req.header('last-event-id') ?? c.req.query('after') ?? 0)
+    return streamSSE(c, async (stream) => {
+      const untrack = hub.track(roomId, me.uid)
+      const queue: ChatEvent[] = []
+      let wakeup: (() => void) | null = null
+      const unsub = hub.subscribe(roomId, (ev) => {
+        queue.push(ev)
+        wakeup?.()
+      })
+      stream.onAbort(() => {
+        unsub()
+        untrack()
+        wakeup?.()
+      })
+      const send = (ev: ChatEvent) =>
+        stream.writeSSE({ id: String(ev.seq), event: 'chat', data: JSON.stringify(ev) })
+      for (const ev of store.listEvents(roomId, after, 1000)) {
+        await send(ev)
+        after = ev.seq
+      }
+      while (!stream.aborted) {
+        if (queue.length === 0) {
+          await new Promise<void>((resolve) => {
+            wakeup = resolve
+            setTimeout(resolve, 15_000)
+          })
+          wakeup = null
+          if (stream.aborted) break
+          if (queue.length === 0) {
+            await stream.writeSSE({ event: 'ping', data: '' })
+            continue
+          }
+        }
+        while (queue.length > 0) {
+          const ev = queue.shift()!
+          if (ev.seq > after) {
+            await send(ev)
+            after = ev.seq
+          }
+        }
+      }
+    })
+  })
+
+  // ---- personas ----
+
+  app.get('/api/personas', (c) => c.json(store.listPersonas()))
+
+  app.post('/api/personas', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { name?: string; system_prompt?: string }
+    const name = body.name?.trim()
+    if (!name || !body.system_prompt) return c.json({ error: 'name and system_prompt are required' }, 400)
+    try {
+      return c.json(store.createPersona(name, body.system_prompt), 201)
+    } catch (err) {
+      if ((err as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE') {
+        return c.json({ error: `persona "${name}" already exists` }, 409)
+      }
+      throw err
+    }
+  })
+
+  // ---- static web UI ----
+
+  if (deps.webDist) {
+    const dist = deps.webDist
+    app.get('*', async (c) => {
+      const reqPath = normalize(c.req.path).replace(/^(\.\.[/\\])+/, '')
+      const filePath = join(dist, reqPath === '/' ? 'index.html' : reqPath)
+      if (!filePath.startsWith(dist)) return c.notFound()
+      try {
+        const body = await readFile(filePath)
+        return c.body(body, 200, { 'content-type': MIME[extname(filePath)] ?? 'application/octet-stream' })
+      } catch {
+        // SPA fallback
+        try {
+          return c.html(await readFile(join(dist, 'index.html'), 'utf-8'))
+        } catch {
+          return c.notFound()
+        }
+      }
+    })
+  }
+
+  return app
+}

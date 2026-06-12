@@ -1,0 +1,315 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  api,
+  loadIdentity,
+  saveIdentity,
+  type ChatEvent,
+  type Identity,
+  type Member,
+  type Persona,
+  type Room,
+} from './api'
+
+export default function App() {
+  const [rooms, setRooms] = useState<Room[]>([])
+  const [roomId, setRoomId] = useState<string | null>(() => location.hash.slice(1) || null)
+  const [showPersonas, setShowPersonas] = useState(false)
+
+  const refreshRooms = useCallback(() => {
+    api.rooms().then(setRooms).catch(console.error)
+  }, [])
+
+  useEffect(refreshRooms, [refreshRooms])
+
+  useEffect(() => {
+    const onHash = () => setRoomId(location.hash.slice(1) || null)
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  const createRoom = async () => {
+    const room = await api.createRoom()
+    refreshRooms()
+    location.hash = room.id
+  }
+
+  return (
+    <div className="layout">
+      <aside className="sidebar">
+        <header>
+          <h1>AI Chatroom</h1>
+          <button onClick={createRoom}>+ 新话题</button>
+        </header>
+        <nav>
+          {rooms.map((r) => (
+            <a key={r.id} href={`#${r.id}`} className={r.id === roomId ? 'active' : ''}>
+              <span className="room-title">{r.title || '（未命名话题）'}</span>
+              <span className="room-meta">{r.last_seq} 条</span>
+            </a>
+          ))}
+        </nav>
+        <footer>
+          <button className="link" onClick={() => setShowPersonas((v) => !v)}>
+            {showPersonas ? '返回聊天' : '人设管理'}
+          </button>
+        </footer>
+      </aside>
+      {showPersonas ? (
+        <PersonaPanel />
+      ) : roomId ? (
+        <ChatRoom key={roomId} roomId={roomId} onRoomChanged={refreshRooms} />
+      ) : (
+        <main className="empty">选择或创建一个话题开始讨论</main>
+      )}
+    </div>
+  )
+}
+
+function ChatRoom({ roomId, onRoomChanged }: { roomId: string; onRoomChanged: () => void }) {
+  const [identity, setIdentity] = useState<Identity | null>(() => loadIdentity(roomId))
+  if (!identity) {
+    return <JoinGate roomId={roomId} onJoined={setIdentity} />
+  }
+  return <ChatView roomId={roomId} identity={identity} onRoomChanged={onRoomChanged} />
+}
+
+function JoinGate({ roomId, onJoined }: { roomId: string; onJoined: (id: Identity) => void }) {
+  const [nickname, setNickname] = useState('')
+  const [error, setError] = useState('')
+  const join = async () => {
+    try {
+      const joined = await api.join(roomId, { nickname: nickname.trim(), type: 'human' })
+      const identity = { uid: joined.uid, token: joined.token, nickname: joined.nickname }
+      saveIdentity(roomId, identity)
+      onJoined(identity)
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+  return (
+    <main className="empty">
+      <div className="join-card">
+        <h2>加入话题</h2>
+        <input
+          placeholder="你的昵称"
+          value={nickname}
+          onChange={(e) => setNickname(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && nickname.trim() && join()}
+          autoFocus
+        />
+        <button disabled={!nickname.trim()} onClick={join}>
+          加入
+        </button>
+        {error && <p className="error">{error}</p>}
+      </div>
+    </main>
+  )
+}
+
+function ChatView({
+  roomId,
+  identity,
+  onRoomChanged,
+}: {
+  roomId: string
+  identity: Identity
+  onRoomChanged: () => void
+}) {
+  const [events, setEvents] = useState<ChatEvent[]>([])
+  const [members, setMembers] = useState<Member[]>([])
+  const [text, setText] = useState('')
+  const [error, setError] = useState('')
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  const memberByUid = useMemo(() => new Map(members.map((m) => [m.uid, m])), [members])
+
+  const refreshMembers = useCallback(() => {
+    api.members(roomId, identity.token).then(setMembers).catch(console.error)
+  }, [roomId, identity.token])
+
+  useEffect(() => {
+    refreshMembers()
+    const timer = setInterval(refreshMembers, 10_000) // presence has no event; poll it
+    return () => clearInterval(timer)
+  }, [refreshMembers])
+
+  useEffect(() => {
+    const es = new EventSource(`/api/rooms/${roomId}/stream?token=${identity.token}`)
+    es.addEventListener('chat', (e) => {
+      const ev = JSON.parse((e as MessageEvent).data) as ChatEvent
+      setEvents((prev) => (prev.some((p) => p.seq === ev.seq) ? prev : [...prev, ev]))
+      if (ev.kind === 'room_updated') onRoomChanged()
+      if (ev.kind === 'member_joined' || ev.kind === 'member_left') refreshMembers()
+    })
+    return () => es.close()
+  }, [roomId, identity.token, onRoomChanged, refreshMembers])
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [events.length])
+
+  const send = async () => {
+    const t = text.trim()
+    if (!t) return
+    try {
+      await api.sendMessage(roomId, identity.token, t)
+      setText('')
+      setError('')
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  // mention autocomplete on a trailing "@partial"
+  const mentionMatch = /(?:^|\s)@([^\s@]*)$/.exec(text)
+  const suggestions = mentionMatch
+    ? members.filter((m) => m.uid !== identity.uid && m.nickname.startsWith(mentionMatch[1]))
+    : []
+  const completeMention = (nickname: string) => {
+    setText(text.slice(0, text.length - mentionMatch![1].length) + nickname + ' ')
+    inputRef.current?.focus()
+  }
+
+  return (
+    <>
+      <main className="chat">
+        <div className="messages">
+          {events.map((ev) => (
+            <EventLine key={ev.seq} ev={ev} memberByUid={memberByUid} myUid={identity.uid} />
+          ))}
+          <div ref={bottomRef} />
+        </div>
+        <div className="composer">
+          {suggestions.length > 0 && (
+            <div className="mention-pop">
+              {suggestions.map((m) => (
+                <button key={m.uid} onClick={() => completeMention(m.nickname)}>
+                  @{m.nickname} <small>{m.type === 'agent' ? m.persona_name ?? 'agent' : 'human'}</small>
+                </button>
+              ))}
+            </div>
+          )}
+          <textarea
+            ref={inputRef}
+            value={text}
+            placeholder="发消息，@昵称 召唤 agent，Enter 发送 / Shift+Enter 换行"
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                send()
+              }
+            }}
+          />
+          {error && <p className="error">{error}</p>}
+        </div>
+      </main>
+      <aside className="members">
+        <h3>成员</h3>
+        {members.map((m) => (
+          <div key={m.uid} className="member">
+            <span className={`dot ${m.online ? 'online' : ''}`} />
+            <span className={`nick ${m.type}`}>{m.nickname}</span>
+            {m.persona_name && <span className="badge">{m.persona_name}</span>}
+            {m.uid === identity.uid && <span className="badge me">我</span>}
+          </div>
+        ))}
+      </aside>
+    </>
+  )
+}
+
+function EventLine({
+  ev,
+  memberByUid,
+  myUid,
+}: {
+  ev: ChatEvent
+  memberByUid: Map<string, Member>
+  myUid: string
+}) {
+  if (ev.kind !== 'message') {
+    const label =
+      ev.kind === 'room_updated' ? `话题已命名：${(ev.payload as { title?: string })?.title ?? ''}` : ev.text
+    return <div className="sysline">{label}</div>
+  }
+  const sender = ev.sender_uid ? memberByUid.get(ev.sender_uid) : undefined
+  const mentioned = ev.mentions.includes(myUid) || ev.mentions.includes('all')
+  return (
+    <div className={`msg ${sender?.type ?? ''} ${mentioned ? 'mentioned' : ''} ${ev.muted ? 'muted' : ''}`}>
+      <div className="msg-head">
+        <span className={`nick ${sender?.type ?? ''}`}>{sender?.nickname ?? ev.sender_uid}</span>
+        {sender?.persona_name && <span className="badge">{sender.persona_name}</span>}
+        {ev.muted && <span className="badge muted-badge">已熔断</span>}
+        <time>{new Date(ev.created_at).toLocaleTimeString()}</time>
+      </div>
+      <div className="msg-body">{renderText(ev.text ?? '')}</div>
+    </div>
+  )
+}
+
+function renderText(text: string) {
+  // highlight @mentions; plain text otherwise
+  return text.split(/(@[^\s@]+)/g).map((part, i) =>
+    part.startsWith('@') ? (
+      <span key={i} className="mention">
+        {part}
+      </span>
+    ) : (
+      <span key={i}>{part}</span>
+    ),
+  )
+}
+
+function PersonaPanel() {
+  const [personas, setPersonas] = useState<Persona[]>([])
+  const [name, setName] = useState('')
+  const [prompt, setPrompt] = useState('')
+  const [error, setError] = useState('')
+
+  const refresh = useCallback(() => {
+    api.personas().then(setPersonas).catch(console.error)
+  }, [])
+  useEffect(refresh, [refresh])
+
+  const create = async () => {
+    try {
+      await api.createPersona(name.trim(), prompt.trim())
+      setName('')
+      setPrompt('')
+      setError('')
+      refresh()
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  return (
+    <main className="personas">
+      <h2>人设预设</h2>
+      <p className="hint">agent 加入房间时可选择一个人设；人设 id 用于 `chatroom join --persona`。</p>
+      {personas.map((p) => (
+        <div key={p.id} className="persona-card">
+          <div className="persona-head">
+            <strong>{p.name}</strong>
+            <code>{p.id}</code>
+          </div>
+          <pre>{p.system_prompt}</pre>
+        </div>
+      ))}
+      <div className="persona-card new">
+        <input placeholder="人设名，如：架构师" value={name} onChange={(e) => setName(e.target.value)} />
+        <textarea
+          placeholder="system prompt，描述这个角色的视角和说话方式"
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+        />
+        <button disabled={!name.trim() || !prompt.trim()} onClick={create}>
+          新建人设
+        </button>
+        {error && <p className="error">{error}</p>}
+      </div>
+    </main>
+  )
+}

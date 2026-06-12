@@ -1,0 +1,51 @@
+export type ParticipantType = 'human' | 'agent'
+
+export type EventKind = 'message' | 'member_joined' | 'member_left' | 'system' | 'room_updated'
+
+export interface Room {
+  id: string
+  title: string
+  created_at: string
+}
+
+export interface Persona {
+  id: string
+  name: string
+  system_prompt: string
+  created_at: string
+}
+
+export interface Participant {
+  uid: string
+  room_id: string
+  persona_id: string | null
+  nickname: string
+  type: ParticipantType
+  token: string
+  last_acked_seq: number
+  created_at: string
+}
+
+export interface ChatEvent {
+  room_id: string
+  seq: number
+  msg_id: string
+  sender_uid: string | null
+  kind: EventKind
+  text: string | null
+  in_reply_to: string | null
+  /** uids, may contain the literal "all" */
+  mentions: string[]
+  /** muted by the agent-loop brake: does not trigger wait() wakeups */
+  muted: boolean
+  payload: Record<string, unknown> | null
+  created_at: string
+}
+
+/** ChatEvent plus per-viewer annotations added when listing a backlog */
+export interface AnnotatedEvent extends ChatEvent {
+  /** true when this event mentions the viewer and the viewer already replied to it */
+  replied_by_you?: boolean
+  /** true when this event mentions the viewer */
+  mentions_you?: boolean
+}
