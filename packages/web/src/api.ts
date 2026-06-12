@@ -38,6 +38,13 @@ export interface Identity {
   nickname: string
 }
 
+export interface LlmInfo {
+  enabled: boolean
+  provider: string | null
+  model: string | null
+  models: string[]
+}
+
 async function j<T>(res: Response): Promise<T> {
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`)
@@ -67,6 +74,8 @@ export const api = {
   personas: () => fetch('/api/personas').then((r) => j<Persona[]>(r)),
   createPersona: (name: string, system_prompt: string) =>
     post('/api/personas', { name, system_prompt }).then((r) => j<Persona>(r)),
+  llm: () => fetch('/api/llm').then((r) => j<LlmInfo>(r)),
+  setLlmModel: (model: string) => post('/api/llm/model', { model }).then((r) => j<Omit<LlmInfo, 'models'>>(r)),
 }
 
 export function identityKey(roomId: string) {

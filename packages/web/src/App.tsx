@@ -5,6 +5,7 @@ import {
   saveIdentity,
   type ChatEvent,
   type Identity,
+  type LlmInfo,
   type Member,
   type Persona,
   type Room,
@@ -49,6 +50,7 @@ export default function App() {
           ))}
         </nav>
         <footer>
+          <LlmStatus />
           <button className="link" onClick={() => setShowPersonas((v) => !v)}>
             {showPersonas ? '返回聊天' : '人设管理'}
           </button>
@@ -61,6 +63,41 @@ export default function App() {
       ) : (
         <main className="empty">选择或创建一个话题开始讨论</main>
       )}
+    </div>
+  )
+}
+
+function LlmStatus() {
+  const [info, setInfo] = useState<LlmInfo | null>(null)
+
+  useEffect(() => {
+    api.llm().then(setInfo).catch(console.error)
+  }, [])
+
+  if (!info) return null
+  if (!info.enabled) return <p className="llm-status off">LLM 未配置</p>
+
+  const switchModel = async (model: string) => {
+    try {
+      const next = await api.setLlmModel(model)
+      setInfo((prev) => prev && { ...prev, ...next })
+    } catch (err) {
+      console.error(err)
+    }
+  }
+
+  // keep the current model selectable even when /models omits it
+  const options = info.model && !info.models.includes(info.model) ? [info.model, ...info.models] : info.models
+  return (
+    <div className="llm-status">
+      <span className="badge">{info.provider}</span>
+      <select value={info.model ?? ''} onChange={(e) => switchModel(e.target.value)}>
+        {options.map((m) => (
+          <option key={m} value={m}>
+            {m}
+          </option>
+        ))}
+      </select>
     </div>
   )
 }

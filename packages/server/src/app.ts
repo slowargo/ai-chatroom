@@ -288,6 +288,22 @@ export function createApp(deps: AppDeps) {
     }
   })
 
+  // ---- llm ----
+
+  app.get('/api/llm', async (c) => {
+    const models = await llm.listModels()
+    return c.json({ ...llm.info(), models })
+  })
+
+  app.post('/api/llm/model', async (c) => {
+    if (!llm.enabled()) return c.json({ error: 'llm is not configured' }, 400)
+    const body = (await c.req.json().catch(() => ({}))) as { model?: string }
+    const model = typeof body.model === 'string' ? body.model.trim() : ''
+    if (!model) return c.json({ error: 'model is required' }, 400)
+    llm.setModel(model)
+    return c.json(llm.info())
+  })
+
   // ---- static web UI ----
 
   if (deps.webDist) {

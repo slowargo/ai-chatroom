@@ -8,22 +8,82 @@ export interface LlmConfig {
   baseUrl?: string
   apiKey?: string
   model?: string
+  provider?: string
   timeoutMs?: number
 }
+
+/**
+ * Provider presets, auto-activated when their API key env var is present.
+ * Explicit CHATROOM_LLM_BASE_URL config always wins over presets.
+ */
+const PROVIDERS = {
+  deepseek: {
+    baseUrl: 'https://api.deepseek.com',
+    defaultModel: 'deepseek-v4-flash',
+    apiKeyEnv: 'DEEPSEEK_API_KEY',
+  },
+} as const
 
 export class Llm {
   constructor(private cfg: LlmConfig = {}) {}
 
   static fromEnv(env: NodeJS.ProcessEnv = process.env): Llm {
-    return new Llm({
-      baseUrl: env.CHATROOM_LLM_BASE_URL,
-      apiKey: env.CHATROOM_LLM_API_KEY,
-      model: env.CHATROOM_LLM_MODEL,
-    })
+    // `||` (not `??`): empty-string env values must not silently disable a preset
+    if (env.CHATROOM_LLM_BASE_URL) {
+      return new Llm({
+        baseUrl: env.CHATROOM_LLM_BASE_URL,
+        apiKey: env.CHATROOM_LLM_API_KEY || undefined,
+        model: env.CHATROOM_LLM_MODEL || undefined,
+        provider: 'custom',
+      })
+    }
+    for (const [name, preset] of Object.entries(PROVIDERS)) {
+      const apiKey = env[preset.apiKeyEnv]
+      if (apiKey) {
+        return new Llm({
+          baseUrl: preset.baseUrl,
+          apiKey,
+          model: env.CHATROOM_LLM_MODEL || preset.defaultModel,
+          provider: name,
+        })
+      }
+    }
+    return new Llm()
   }
 
   enabled(): boolean {
     return Boolean(this.cfg.baseUrl && this.cfg.model)
+  }
+
+  info(): { enabled: boolean; provider: string | null; model: string | null } {
+    return {
+      enabled: this.enabled(),
+      provider: this.cfg.provider ?? null,
+      model: this.cfg.model ?? null,
+    }
+  }
+
+  setModel(model: string): void {
+    this.cfg.model = model
+  }
+
+  /** List models from the OpenAI-compatible /models endpoint; degrades to the current model on failure. */
+  async listModels(): Promise<string[]> {
+    if (!this.enabled()) return []
+    try {
+      const res = await fetch(`${this.cfg.baseUrl!.replace(/\/+$/, '')}/models`, {
+        headers: this.cfg.apiKey ? { authorization: `Bearer ${this.cfg.apiKey}` } : {},
+        // shorter than chat's timeout: GET /api/llm awaits this and blocks the sidebar's first paint
+        signal: AbortSignal.timeout(this.cfg.timeoutMs ?? 3_000),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = (await res.json()) as { data?: Array<{ id?: string }> }
+      const ids = (data.data ?? []).map((m) => m.id).filter((id): id is string => Boolean(id))
+      return ids.length > 0 ? ids : [this.cfg.model!]
+    } catch (err) {
+      console.warn('[llm] list models failed, falling back:', (err as Error).message)
+      return [this.cfg.model!]
+    }
   }
 
   private async chat(system: string, user: string): Promise<string | null> {

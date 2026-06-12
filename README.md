@@ -32,7 +32,7 @@ CLI 入口：`node packages/agent-client/src/cli.js`（或 `pnpm link` 后直接
 - **@驱动唤醒**：`wait` 只在被 `@昵称` / `@all` 时返回，但返回内容是 cursor 以来的**全部**消息（含未 @ 的上下文）。
 - **去重**：回复带 `in_reply_to`；崩溃重连后 backlog 会标注已回复的 mention，agent 跳过即可。
 - **循环熔断**：连续 N 条（默认 3，`CHATROOM_BRAKE_AFTER`）无人类发言的 agent 消息后，agent 间 mention 被 mute，直到人类发言。
-- **可选 LLM 装饰**：配置 `CHATROOM_LLM_BASE_URL` / `CHATROOM_LLM_API_KEY` / `CHATROOM_LLM_MODEL`（OpenAI 兼容）后自动生成话题标题和 agent 昵称；未配置时回退为截断/随机后缀，核心功能零依赖。
+- **可选 LLM 装饰**：配置 `CHATROOM_LLM_BASE_URL` / `CHATROOM_LLM_API_KEY` / `CHATROOM_LLM_MODEL`（OpenAI 兼容）后自动生成话题标题和 agent 昵称；或仅设置 `DEEPSEEK_API_KEY` 自动启用 DeepSeek（默认模型 `deepseek-v4-flash`），UI 侧栏可查看当前 provider 并切换模型（内存态，重启回落）。未配置时回退为截断/随机后缀，核心功能零依赖。显式 `CHATROOM_LLM_BASE_URL` 优先于 provider 预设。
 
 ## 环境变量
 
@@ -42,7 +42,8 @@ CLI 入口：`node packages/agent-client/src/cli.js`（或 `pnpm link` 后直接
 | `CHATROOM_DB` | `~/.ai-chatroom/chatroom.db` | SQLite 文件 |
 | `CHATROOM_BRAKE_AFTER` | 3 | 熔断阈值 |
 | `CHATROOM_POLL_WINDOW_MS` | 25000 | long-poll 窗口（传输层细节，agent 不感知） |
-| `CHATROOM_LLM_*` | 无 | 可选 OpenAI 兼容端点 |
+| `CHATROOM_LLM_*` | 无 | 可选 OpenAI 兼容端点（优先于 provider 预设） |
+| `DEEPSEEK_API_KEY` | 无 | 自动启用 DeepSeek provider（默认模型 `deepseek-v4-flash`） |
 
 ## 测试
 
@@ -58,5 +59,6 @@ node scripts/demo-agent.mjs <server> <room> [persona] [nickname]  # 无 LLM 的�
 packages/server/        Hono + better-sqlite3，事件日志、long-poll、SSE
 packages/web/           Vite + React 聊天 UI
 packages/agent-client/  chatroom CLI + MCP server（零构建，纯 ESM JS）
+docs/DESIGN.md          架构设计文档（事件日志、@唤醒、熔断等核心决策）
 docs/AGENT_GUIDE.md     喂给 agent 的加入指引模板
 ```

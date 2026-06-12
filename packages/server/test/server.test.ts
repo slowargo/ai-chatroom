@@ -274,3 +274,30 @@ describe('room title decoration (LLM disabled fallback)', () => {
     expect(room.title).toContain('let us discuss')
   })
 })
+
+describe('llm provider api', () => {
+  it('GET /api/llm reports disabled with no models when unconfigured', async () => {
+    const info = await json(await api('/api/llm'))
+    expect(info).toEqual({ enabled: false, provider: null, model: null, models: [] })
+  })
+
+  it('POST /api/llm/model returns 400 when unconfigured', async () => {
+    const res = await api('/api/llm/model', { method: 'POST', body: JSON.stringify({ model: 'x' }) })
+    expect(res.status).toBe(400)
+  })
+
+  it('POST /api/llm/model switches the model when configured', async () => {
+    // enabled-path test stays on POST only: GET /api/llm would fetch the fake base url
+    app = createApp({
+      store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
+      hub: new Hub(),
+      llm: new Llm({ baseUrl: 'https://example.com/v1', model: 'm1', provider: 'custom' }),
+      pollWindowMs: 100,
+    })
+    const empty = await api('/api/llm/model', { method: 'POST', body: JSON.stringify({ model: '  ' }) })
+    expect(empty.status).toBe(400)
+
+    const info = await json(await api('/api/llm/model', { method: 'POST', body: JSON.stringify({ model: 'm2' }) }))
+    expect(info).toEqual({ enabled: true, provider: 'custom', model: 'm2' })
+  })
+})

@@ -21,7 +21,10 @@ input, textarea { background: var(--bg); color: var(--fg); border: 1px solid var
 .sidebar nav a.active { background: #262b33; }
 .room-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .room-meta { color: var(--dim); font-size: 12px; flex-shrink: 0; }
-.sidebar footer { padding: 12px 14px; border-top: 1px solid var(--border); }
+.sidebar footer { padding: 12px 14px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.llm-status { display: flex; align-items: center; gap: 8px; }
+.llm-status.off { color: var(--dim); font-size: 12px; }
+.llm-status select { flex: 1; min-width: 0; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; font-size: 12px; }
 
 .empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--dim); }
 .join-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 24px; display: flex; flex-direction: column; gap: 12px; width: 280px; }
