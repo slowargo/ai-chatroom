@@ -342,7 +342,9 @@ export class Store {
     const found = new Set<string>()
     if (/@all(\b|$)/.test(text)) found.add('all')
     for (const m of members) {
-      if (text.includes(`@${m.nickname}`)) found.add(m.uid)
+      const escaped = m.nickname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      // \p{L}\p{N} instead of \w: the boundary must also reject CJK continuations (@架构 vs @架构师)
+      if (new RegExp(`@${escaped}(?![\\p{L}\\p{N}_-])`, 'u').test(text)) found.add(m.uid)
     }
     for (const uid of explicit ?? []) {
       if (uid === 'all' || members.some((m) => m.uid === uid)) found.add(uid)

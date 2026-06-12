@@ -93,6 +93,38 @@ describe('join & identity', () => {
 })
 
 describe('messages, mentions, seq', () => {
+  it('does not false-positive on substring nicknames (e.g. @bo vs @bob)', async () => {
+    const roomId = await createRoom()
+    const bo = await joinRoom(roomId, { nickname: 'bo', type: 'agent' })
+    const bob = await joinRoom(roomId, { nickname: 'bob', type: 'agent' })
+    const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
+
+    const m = await post(roomId, alice.token, 'hey @bob what do you think?')
+    expect(m.mentions).toContain(bob.uid)
+    expect(m.mentions).not.toContain(bo.uid)
+
+    // but @bo followed by a space should still work
+    const m2 = await post(roomId, alice.token, 'hey @bo what about you?')
+    expect(m2.mentions).toContain(bo.uid)
+    expect(m2.mentions).not.toContain(bob.uid)
+  })
+
+  it('does not false-positive on CJK substring nicknames (e.g. @架构 vs @架构师)', async () => {
+    const roomId = await createRoom()
+    const short = await joinRoom(roomId, { nickname: '架构', type: 'agent' })
+    const long = await joinRoom(roomId, { nickname: '架构师', type: 'agent' })
+    const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
+
+    const m = await post(roomId, alice.token, '@架构师 这个方案怎么看？')
+    expect(m.mentions).toContain(long.uid)
+    expect(m.mentions).not.toContain(short.uid)
+
+    // @架构 followed by space or CJK punctuation should still match
+    const m2 = await post(roomId, alice.token, '@架构 你呢？')
+    expect(m2.mentions).toContain(short.uid)
+    expect(m2.mentions).not.toContain(long.uid)
+  })
+
   it('assigns monotonic seq and resolves @nickname server-side', async () => {
     const roomId = await createRoom()
     const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
