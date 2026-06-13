@@ -97,6 +97,30 @@ export function createApp(deps: AppDeps) {
     return room ? c.json(room) : c.json({ error: 'room not found' }, 404)
   })
 
+  app.delete('/api/rooms/:id', (c) => {
+    const roomId = c.req.param('id')
+    const room = store.getRoom(roomId)
+    if (!room) return c.json({ error: 'room not found' }, 404)
+    hub.publish(roomId, [
+      {
+        room_id: roomId,
+        seq: Number.MAX_SAFE_INTEGER,
+        msg_id: '',
+        sender_uid: null,
+        kind: 'room_deleted',
+        text: null,
+        in_reply_to: null,
+        mentions: [],
+        muted: false,
+        payload: null,
+        created_at: new Date().toISOString(),
+      },
+    ])
+    lastTitledCount.delete(roomId)
+    store.deleteRoom(roomId)
+    return c.body(null, 204)
+  })
+
   // ---- join / members ----
 
   app.post('/api/rooms/:id/join', async (c) => {

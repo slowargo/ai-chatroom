@@ -23,7 +23,7 @@ export interface ChatEvent {
   seq: number
   msg_id: string
   sender_uid: string | null
-  kind: 'message' | 'member_joined' | 'member_left' | 'system' | 'room_updated'
+  kind: 'message' | 'member_joined' | 'member_left' | 'system' | 'room_updated' | 'room_deleted'
   text: string | null
   in_reply_to: string | null
   mentions: string[]
@@ -76,6 +76,7 @@ export const api = {
     post('/api/personas', { name, system_prompt }).then((r) => j<Persona>(r)),
   llm: () => fetch('/api/llm').then((r) => j<LlmInfo>(r)),
   setLlmModel: (model: string) => post('/api/llm/model', { model }).then((r) => j<Omit<LlmInfo, 'models'>>(r)),
+  deleteRoom: (id: string) => fetch(`/api/rooms/${id}`, { method: 'DELETE' }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); }),
 }
 
 export function identityKey(roomId: string) {

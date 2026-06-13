@@ -96,6 +96,17 @@ export class Store {
     return this.db.prepare('SELECT * FROM rooms WHERE id = ?').get(id) as Room | undefined
   }
 
+  deleteRoom(id: string): boolean {
+    const room = this.getRoom(id)
+    if (!room) return false
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM events WHERE room_id = ?').run(id)
+      this.db.prepare('DELETE FROM participants WHERE room_id = ?').run(id)
+      this.db.prepare('DELETE FROM rooms WHERE id = ?').run(id)
+    })()
+    return true
+  }
+
   /** Set the title; `auto` controls whether later auto-decoration may still overwrite it. */
   setRoomTitle(id: string, title: string, auto = true): void {
     this.db.prepare('UPDATE rooms SET title = ?, title_auto = ? WHERE id = ?').run(title, auto ? 1 : 0, id)

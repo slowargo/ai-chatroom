@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { version } from '../package.json'
 import {
   api,
+  identityKey,
   loadIdentity,
   saveIdentity,
   type ChatEvent,
@@ -36,6 +37,20 @@ export default function App() {
     location.hash = room.id
   }
 
+  const deleteRoom = async (e: React.MouseEvent, id: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!confirm('确定删除此话题？所有消息将不可恢复。')) return
+    try {
+      await api.deleteRoom(id)
+      localStorage.removeItem(identityKey(id))
+      if (roomId === id) location.hash = ''
+      refreshRooms()
+    } catch (err) {
+      console.error(err)
+    }
+  }
+
   return (
     <div className="layout">
       <aside className="sidebar">
@@ -49,7 +64,10 @@ export default function App() {
               <span className="room-title" title={r.title || '（未命名话题）'}>
                 {r.title || '（未命名话题）'}
               </span>
-              <span className="room-meta">{r.last_seq} 条</span>
+              <span className="room-meta">
+                {r.last_seq} 条
+                <button className="room-delete" onClick={(e) => deleteRoom(e, r.id)} title="删除话题">×</button>
+              </span>
             </a>
           ))}
         </nav>
@@ -184,6 +202,7 @@ function ChatView({
       const ev = JSON.parse((e as MessageEvent).data) as ChatEvent
       setEvents((prev) => (prev.some((p) => p.seq === ev.seq) ? prev : [...prev, ev]))
       if (ev.kind === 'room_updated') onRoomChanged()
+      if (ev.kind === 'room_deleted') { onRoomChanged(); location.hash = ''; return }
       if (ev.kind === 'member_joined' || ev.kind === 'member_left') refreshMembers()
     })
     return () => es.close()
