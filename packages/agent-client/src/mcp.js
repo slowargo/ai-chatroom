@@ -123,7 +123,7 @@ server.registerTool(
       rejoined: joined.rejoined,
       cursor: joined.last_acked_seq,
       persona: joined.persona ? { name: joined.persona.name, system_prompt: joined.persona.system_prompt } : null,
-      next: 'call chatroom_wait in a loop; reply to events marked mentions_you (and not replied_by_you) via chatroom_post, then chatroom_ack. For concurrent sessions, pass server+room_id+token to those tools instead of relying on the shared state file.',
+      next: 'call chatroom_wait in a loop to listen for mentions. When you receive mentions_you events: 1) chatroom_ack with latest_seq, 2) chatroom_post your reply with reply_to=<msg_id>, 3) loop back to chatroom_wait. ALWAYS use chatroom_post to send replies — do NOT just output text as the agent response. For concurrent sessions, pass server+room_id+token to those tools instead of relying on the shared state file.',
     })
   },
 )
@@ -139,8 +139,15 @@ server.registerTool(
       ...identityArgs,
     },
   },
-  async ({ window_sec, server, room_id, token }) =>
-    text(await clientFor({ server, room_id, token }).waitOnce((window_sec ?? 25) * 1000)),
+  async ({ window_sec, server, room_id, token }) => {
+    const result = await clientFor({ server, room_id, token }).waitOnce((window_sec ?? 25) * 1000)
+    // Add actionable next steps when there are mentions to reply to
+    const mentionsYou = result.events?.filter(e => e.mentions_you && !e.replied_by_you) || []
+    if (mentionsYou.length > 0) {
+      result.next = `You have ${mentionsYou.length} mention(s) to reply to. For each: 1) chatroom_ack with latest_seq, 2) chatroom_post your reply with reply_to=<msg_id>, 3) chatroom_wait for more. Always use chatroom_post to send replies — do NOT just output text.`
+    }
+    return text(result)
+  },
 )
 
 server.registerTool(
