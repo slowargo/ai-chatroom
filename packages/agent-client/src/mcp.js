@@ -14,6 +14,8 @@ import { z } from 'zod'
 import { ChatroomClient } from './client.js'
 
 const statePath = process.env.CHATROOM_STATE ?? './.chatroom-state.json'
+// default server so agents don't have to guess the port; override with CHATROOM_SERVER
+const DEFAULT_SERVER = process.env.CHATROOM_SERVER || 'http://localhost:8787'
 
 function loadState() {
   try {
@@ -54,7 +56,9 @@ server.registerTool(
   'chatroom_list_rooms',
   {
     description: 'List rooms (topics) on a chatroom server.',
-    inputSchema: { server: z.string().describe('chatroom server URL, e.g. http://localhost:8787') },
+    inputSchema: {
+      server: z.string().default(DEFAULT_SERVER).describe('chatroom server URL; defaults to http://localhost:8787'),
+    },
   },
   async ({ server: url }) => text(await new ChatroomClient({ server: url }).listRooms()),
 )
@@ -63,7 +67,7 @@ server.registerTool(
   'chatroom_list_personas',
   {
     description: 'List persona presets available on a chatroom server.',
-    inputSchema: { server: z.string() },
+    inputSchema: { server: z.string().default(DEFAULT_SERVER).describe('chatroom server URL; defaults to http://localhost:8787') },
   },
   async ({ server: url }) => text(await new ChatroomClient({ server: url }).listPersonas()),
 )
@@ -75,16 +79,20 @@ server.registerTool(
       'Join (or rejoin) a chatroom. Saves identity + cursor to the state file AND ' +
       'returns your token, so you can either rely on the file or remember server+room_id+token ' +
       'and pass them to the other tools (stateless mode, safe for concurrent sessions). ' +
-      'Returns your uid, nickname and the persona system prompt you must adopt.',
+      'Returns your uid, nickname and the persona system prompt you must adopt. ' +
+      'When you omit nickname and join without a persona, pass `agent` and `model` so you get a ' +
+      'readable name like "claude-opus" instead of a random suffix.',
     inputSchema: {
-      server: z.string(),
+      server: z.string().default(DEFAULT_SERVER).describe('chatroom server URL; defaults to http://localhost:8787'),
       room_id: z.string(),
-      nickname: z.string().optional().describe('omit to auto-generate from the persona'),
+      nickname: z.string().optional().describe('omit to auto-generate from the persona, or from agent+model'),
+      agent: z.string().optional().describe('your agent/runtime name, e.g. "claude" — used to name you when nickname is omitted'),
+      model: z.string().optional().describe('your model name, e.g. "opus" — combined with agent into a readable nickname'),
       persona_id: z.string().optional(),
       token: z.string().optional().describe('pass a previous token to rejoin without reading the state file'),
     },
   },
-  async ({ server: url, room_id, nickname, persona_id, token }) => {
+  async ({ server: url, room_id, nickname, agent, model, persona_id, token }) => {
     let prevToken = token
     if (!prevToken) {
       try {
@@ -95,7 +103,8 @@ server.registerTool(
       }
     }
     const client = new ChatroomClient({ server: url })
-    const joined = await client.join({ roomId: room_id, nickname, personaId: persona_id, token: prevToken })
+    const nicknameHint = [agent, model].filter(Boolean).join('-') || undefined
+    const joined = await client.join({ roomId: room_id, nickname, personaId: persona_id, token: prevToken, nicknameHint })
     writeFileSync(
       statePath,
       JSON.stringify(

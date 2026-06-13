@@ -34,6 +34,22 @@ function publicParticipant(p: Participant) {
   return rest
 }
 
+// Title auto-decoration fires only at these message-count milestones (not on every
+// message), refining the auto title as the topic takes shape. Count 1 names the room
+// as soon as there's any content; count 2 lets the first real reply supersede a weak
+// first title (e.g. a bare URL); the final milestone locks it.
+const TITLE_MILESTONES = [1, 2, 6]
+const TITLE_LOCK_AT = 6 // the final milestone: lock the auto title against further changes
+
+const BARE_URL = /^https?:\/\/\S+$/i
+
+/** Deterministic fallback title when the LLM is unavailable: prefer the first message with real words over a bare URL. */
+function fallbackTitle(messages: Array<{ text: string }>): string {
+  const pick = messages.find((m) => m.text && !BARE_URL.test(m.text.trim())) ?? messages[0]
+  const t = pick?.text?.trim() ?? ''
+  return t.length > 24 ? `${t.slice(0, 24)}…` : t
+}
+
 export function createApp(deps: AppDeps) {
   const { store, hub, llm } = deps
   const pollWindowMs = deps.pollWindowMs ?? 25_000
@@ -43,6 +59,10 @@ export function createApp(deps: AppDeps) {
     hub.publish(roomId, events)
     return events
   }
+
+  // highest milestone count whose generated title we've applied per room; guards against a
+  // slower earlier-milestone generation clobbering a later, richer one (last-writer-wins is wrong here)
+  const lastTitledCount = new Map<string, number>()
 
   const auth = createMiddleware<Env>(async (c, next) => {
     const token =
@@ -83,6 +103,7 @@ export function createApp(deps: AppDeps) {
     if (!store.getRoom(roomId)) return c.json({ error: 'room not found' }, 404)
     const body = (await c.req.json().catch(() => ({}))) as {
       nickname?: string
+      nickname_hint?: string
       type?: ParticipantType
       persona_id?: string
       token?: string
@@ -93,19 +114,39 @@ export function createApp(deps: AppDeps) {
     if (body.persona_id && !persona) return c.json({ error: 'persona not found' }, 404)
 
     let nickname = body.nickname?.trim()
-    if (!nickname && !body.token) {
+    const autoNick = !nickname && !body.token
+    let base = ''
+    if (autoNick) {
       const taken = store.listParticipants(roomId).map((p) => p.nickname)
       const generated = persona ? await llm.genNickname(persona.name, persona.system_prompt, taken) : null
-      const base = generated ?? `${persona?.name ?? type}-${Math.random().toString(36).slice(2, 6)}`
+      // caller-supplied hint (e.g. "claude-opus" from an agent's agent+model) beats a random suffix
+      const hint = body.nickname_hint?.trim().replace(/[@\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 20)
+      base = generated || hint || `${persona?.name ?? type}-${Math.random().toString(36).slice(2, 6)}`
       nickname = taken.includes(base) ? `${base}-${Math.random().toString(36).slice(2, 6)}` : base
     }
 
-    const { participant, rejoined, events } = store.joinRoom(roomId, {
-      nickname: nickname ?? '',
-      type,
-      persona_id: persona?.id ?? null,
-      token: body.token ?? null,
-    })
+    // The taken-check above is non-atomic: across the await in genNickname, a concurrent join can
+    // claim the same base, so joinRoom's own pre-check then throws ConflictError. Retry the
+    // auto-assigned path with a fresh suffix; an explicit nickname clash stays a 409.
+    let joined: ReturnType<typeof store.joinRoom>
+    for (let attempt = 0; ; attempt++) {
+      try {
+        joined = store.joinRoom(roomId, {
+          nickname: nickname ?? '',
+          type,
+          persona_id: persona?.id ?? null,
+          token: body.token ?? null,
+        })
+        break
+      } catch (err) {
+        if (err instanceof ConflictError && autoNick && attempt < 5) {
+          nickname = `${base}-${Math.random().toString(36).slice(2, 6)}`
+          continue
+        }
+        throw err
+      }
+    }
+    const { participant, rejoined, events } = joined
     emit(roomId, events)
     return c.json(
       {
@@ -153,22 +194,31 @@ export function createApp(deps: AppDeps) {
         mentions,
       }),
     )
-    maybeDecorateTitle(roomId, me, text)
+    maybeDecorateTitle(roomId)
     const msg = events[0]
     return c.json({ msg_id: msg.msg_id, seq: msg.seq, mentions: msg.mentions, muted: msg.muted }, 201)
   })
 
-  function maybeDecorateTitle(roomId: string, sender: Participant, text: string) {
-    if (sender.type !== 'human') return
+  // Auto-name a room from its content, but only at the TITLE_MILESTONES message counts.
+  // Refines the auto title as the topic takes shape and locks it at TITLE_LOCK_AT.
+  // Never touches a user-fixed title.
+  function maybeDecorateTitle(roomId: string) {
     const room = store.getRoom(roomId)
-    if (!room || room.title !== '') return
+    if (!room || room.title_auto === 0) return
+    const count = store.messageCount(roomId)
+    if (!TITLE_MILESTONES.includes(count)) return
+    const lock = count >= TITLE_LOCK_AT
+    const recent = store.recentMessages(roomId, 8)
     void llm
-      .genTitle(store.recentMessages(roomId, 6))
+      .genTitle(recent)
       .then((generated) => {
         const current = store.getRoom(roomId)
-        if (!current || current.title !== '') return
-        const title = generated ?? (text.length > 24 ? `${text.slice(0, 24)}…` : text)
-        store.setRoomTitle(roomId, title)
+        if (!current || current.title_auto === 0) return
+        if ((lastTitledCount.get(roomId) ?? 0) > count) return // a later milestone already won the race
+        const title = generated ?? fallbackTitle(recent)
+        if (!title || title === current.title) return
+        lastTitledCount.set(roomId, count)
+        store.setRoomTitle(roomId, title, !lock)
         emit(roomId, store.appendEvent(roomId, { kind: 'room_updated', payload: { title } }))
       })
       .catch((err) => console.warn('[llm] title decoration failed:', err))

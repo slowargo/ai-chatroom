@@ -5,6 +5,8 @@ export type EventKind = 'message' | 'member_joined' | 'member_left' | 'system' |
 export interface Room {
   id: string
   title: string
+  /** 1 = title is auto-generated and may still be refined; 0 = user-fixed, locked */
+  title_auto: number
   created_at: string
 }
 

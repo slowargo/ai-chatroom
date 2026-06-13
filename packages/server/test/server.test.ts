@@ -90,6 +90,46 @@ describe('join & identity', () => {
     expect(a.nickname).toMatch(/^architect-/)
     expect(a.persona.system_prompt).toContain('architect')
   })
+
+  it('uses nickname_hint (e.g. agent-model) as the base when no nickname/persona given', async () => {
+    const roomId = await createRoom()
+    const a = await joinRoom(roomId, { type: 'agent', nickname_hint: 'claude-opus' })
+    expect(a.nickname).toBe('claude-opus')
+    // a second joiner with the same hint must not collide
+    const b = await joinRoom(roomId, { type: 'agent', nickname_hint: 'claude-opus' })
+    expect(b.nickname).toMatch(/^claude-opus-/)
+  })
+
+  it('survives a concurrent same-base join: both get distinct nicknames, no 409', async () => {
+    // A persona introduces an await (genNickname) between the taken-check and joinRoom, and a
+    // deterministic generated name makes two concurrent joins pick the same base; the second then
+    // hits joinRoom's ConflictError pre-check and must recover with a suffix instead of a 409.
+    const llm = new Llm()
+    ;(llm as unknown as { genNickname: () => Promise<string> }).genNickname = async () => 'twin'
+    const localApp = createApp({
+      store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
+      hub: new Hub(),
+      llm,
+      pollWindowMs: 100,
+    })
+    const call = (path: string, body: unknown) =>
+      Promise.resolve(
+        localApp.request(path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+      ).then((r) => r.json())
+    const roomId = (await call('/api/rooms', {})).id
+    const persona = await call('/api/personas', { name: 'twins', system_prompt: 'x' })
+    const [a, b] = await Promise.all([
+      call(`/api/rooms/${roomId}/join`, { type: 'agent', persona_id: persona.id }),
+      call(`/api/rooms/${roomId}/join`, { type: 'agent', persona_id: persona.id }),
+    ])
+    expect(a.nickname).toBeTruthy()
+    expect(b.nickname).toBeTruthy()
+    expect(a.nickname).not.toBe(b.nickname) // the loser got a suffix instead of a ConflictError
+  })
 })
 
 describe('messages, mentions, seq', () => {
@@ -265,13 +305,19 @@ describe('agent loop brake', () => {
 })
 
 describe('room title decoration (LLM disabled fallback)', () => {
-  it('sets a truncated title after the first human message', async () => {
+  it('names the room at the first message, then refines past a bare URL on reply', async () => {
     const roomId = await createRoom()
     const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
-    await post(roomId, alice.token, 'let us discuss the new event-log schema design')
+    await post(roomId, alice.token, 'https://example.com/some/very/long/link/that/should/not/be/the/title')
     await new Promise((r) => setTimeout(r, 20)) // decoration is fire-and-forget
-    const room = await json(await api(`/api/rooms/${roomId}`))
-    expect(room.title).toContain('let us discuss')
+    let room = await json(await api(`/api/rooms/${roomId}`))
+    expect(room.title).not.toBe('') // milestone 1: named immediately, even from a lone URL
+
+    const bot = await joinRoom(roomId, { nickname: 'bot', type: 'agent' })
+    await post(roomId, bot.token, 'Summary: we are discussing the event-log schema')
+    await new Promise((r) => setTimeout(r, 20))
+    room = await json(await api(`/api/rooms/${roomId}`))
+    expect(room.title).toContain('Summary') // milestone 2: fallback skips the URL, uses the summary
   })
 })
 

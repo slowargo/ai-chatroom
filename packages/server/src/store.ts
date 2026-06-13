@@ -63,10 +63,11 @@ export class Store {
   // ---- rooms ----
 
   createRoom(title = ''): Room {
-    const room: Room = { id: ulid(), title, created_at: this.now() }
+    // an explicit title at creation is user-fixed (auto=0); an empty one awaits auto-decoration (auto=1)
+    const room: Room = { id: ulid(), title, title_auto: title ? 0 : 1, created_at: this.now() }
     this.db
-      .prepare('INSERT INTO rooms (id, title, created_at) VALUES (?, ?, ?)')
-      .run(room.id, room.title, room.created_at)
+      .prepare('INSERT INTO rooms (id, title, title_auto, created_at) VALUES (?, ?, ?, ?)')
+      .run(room.id, room.title, room.title_auto, room.created_at)
     return room
   }
 
@@ -83,8 +84,17 @@ export class Store {
     return this.db.prepare('SELECT * FROM rooms WHERE id = ?').get(id) as Room | undefined
   }
 
-  setRoomTitle(id: string, title: string): void {
-    this.db.prepare('UPDATE rooms SET title = ? WHERE id = ?').run(title, id)
+  /** Set the title; `auto` controls whether later auto-decoration may still overwrite it. */
+  setRoomTitle(id: string, title: string, auto = true): void {
+    this.db.prepare('UPDATE rooms SET title = ?, title_auto = ? WHERE id = ?').run(title, auto ? 1 : 0, id)
+  }
+
+  /** Count of chat messages in a room (excludes join/system/room_updated events). */
+  messageCount(roomId: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM events WHERE room_id = ? AND kind = 'message'")
+      .get(roomId) as { n: number }
+    return row.n
   }
 
   // ---- personas ----

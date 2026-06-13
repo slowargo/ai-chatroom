@@ -4,6 +4,8 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS rooms (
   id          TEXT PRIMARY KEY,
   title       TEXT NOT NULL DEFAULT '',
+  -- 1 = title is auto-generated and may be refined/overwritten; 0 = user-fixed, never touched
+  title_auto  INTEGER NOT NULL DEFAULT 1,
   created_at  TEXT NOT NULL
 );
 
@@ -50,5 +52,10 @@ export function openDb(path: string): Database.Database {
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
   db.exec(SCHEMA)
+  // migrate DBs created before title_auto existed
+  const roomCols = db.prepare('PRAGMA table_info(rooms)').all() as Array<{ name: string }>
+  if (!roomCols.some((c) => c.name === 'title_auto')) {
+    db.exec("ALTER TABLE rooms ADD COLUMN title_auto INTEGER NOT NULL DEFAULT 1")
+  }
   return db
 }

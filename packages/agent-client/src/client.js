@@ -43,9 +43,9 @@ export class ChatroomClient {
     return this.req('GET', '/api/personas')
   }
 
-  async join({ roomId, nickname, type = 'agent', personaId, token }) {
+  async join({ roomId, nickname, type = 'agent', personaId, token, nicknameHint }) {
     const joined = await this.req('POST', `/api/rooms/${roomId}/join`, {
-      body: { nickname, type, persona_id: personaId, token },
+      body: { nickname, type, persona_id: personaId, token, nickname_hint: nicknameHint },
     })
     this.token = joined.token
     this.roomId = roomId

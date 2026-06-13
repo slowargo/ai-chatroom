@@ -44,7 +44,9 @@ export default function App() {
         <nav>
           {rooms.map((r) => (
             <a key={r.id} href={`#${r.id}`} className={r.id === roomId ? 'active' : ''}>
-              <span className="room-title">{r.title || '（未命名话题）'}</span>
+              <span className="room-title" title={r.title || '（未命名话题）'}>
+                {r.title || '（未命名话题）'}
+              </span>
               <span className="room-meta">{r.last_seq} 条</span>
             </a>
           ))}
