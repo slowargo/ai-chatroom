@@ -114,8 +114,8 @@ function LlmStatus() {
   const options = info.model && !info.models.includes(info.model) ? [info.model, ...info.models] : info.models
   return (
     <div className="llm-status">
-      <span className="badge">{info.provider}</span>
-      <select value={info.model ?? ''} onChange={(e) => switchModel(e.target.value)}>
+      <span className="badge" title="LLM 服务提供商">{info.provider}</span>
+      <select title="用于自动生成房间标题和 Agent 昵称" value={info.model ?? ''} onChange={(e) => switchModel(e.target.value)}>
         {options.map((m) => (
           <option key={m} value={m}>
             {m}
