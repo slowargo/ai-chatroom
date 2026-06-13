@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { version } from '../package.json'
 import {
   api,
   loadIdentity,
@@ -57,6 +58,7 @@ export default function App() {
           <button className="link" onClick={() => setShowPersonas((v) => !v)}>
             {showPersonas ? '返回聊天' : '人设管理'}
           </button>
+          <span className="version">v{version}</span>
         </footer>
       </aside>
       {showPersonas ? (
