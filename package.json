@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "pnpm --filter @chatroom/server dev",
+    "dev:all": "pnpm -r --parallel dev",
     "build": "pnpm -r build",
     "test": "pnpm -r test"
   },
