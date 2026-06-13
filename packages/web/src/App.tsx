@@ -164,6 +164,7 @@ function ChatView({
 
   const memberByUid = useMemo(() => new Map(members.map((m) => [m.uid, m])), [members])
   const mentionNames = useMemo(() => members.map((m) => m.nickname), [members])
+  const eventByMsgId = useMemo(() => new Map(events.map((e) => [e.msg_id, e])), [events])
 
   const refreshMembers = useCallback(() => {
     api.members(roomId, identity.token).then(setMembers).catch(console.error)
@@ -223,6 +224,7 @@ function ChatView({
             <EventLine
               key={ev.seq}
               ev={ev}
+              eventByMsgId={eventByMsgId}
               memberByUid={memberByUid}
               myUid={identity.uid}
               mentionNames={mentionNames}
@@ -294,11 +296,13 @@ function ChatView({
 
 function EventLine({
   ev,
+  eventByMsgId,
   memberByUid,
   myUid,
   mentionNames,
 }: {
   ev: ChatEvent
+  eventByMsgId: Map<string, ChatEvent>
   memberByUid: Map<string, Member>
   myUid: string
   mentionNames: string[]
@@ -310,8 +314,17 @@ function EventLine({
   }
   const sender = ev.sender_uid ? memberByUid.get(ev.sender_uid) : undefined
   const mentioned = ev.mentions.includes(myUid) || ev.mentions.includes('all')
+  const replyTarget = ev.in_reply_to ? eventByMsgId.get(ev.in_reply_to) : undefined
+  const replyNick = replyTarget?.sender_uid ? (memberByUid.get(replyTarget.sender_uid)?.nickname ?? '未知用户') : undefined
   return (
     <div className={`msg ${sender?.type ?? ''} ${mentioned ? 'mentioned' : ''} ${ev.muted ? 'muted' : ''}`}>
+      {replyTarget && (
+        <div className="reply-preview">
+          <span className="reply-icon">↩</span>
+          <span className="reply-nick">{replyNick ?? replyTarget.sender_uid}</span>
+          <span className="reply-text">{(replyTarget.text ?? '').slice(0, 80)}{(replyTarget.text?.length ?? 0) > 80 ? '…' : ''}</span>
+        </div>
+      )}
       <div className="msg-head">
         <span className={`nick ${sender?.type ?? ''}`}>{sender?.nickname ?? ev.sender_uid}</span>
         {sender?.persona_name && <span className="badge">{sender.persona_name}</span>}
