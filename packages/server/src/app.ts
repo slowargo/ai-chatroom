@@ -277,7 +277,7 @@ export function createApp(deps: AppDeps) {
     const roomId = c.req.param('id')
     const me = c.get('me')
     const after = c.req.query('after') !== undefined ? Number(c.req.query('after')) : me.last_acked_seq
-    const windowMs = Math.min(Number(c.req.query('window_ms') ?? pollWindowMs), 60_000)
+    const windowMs = Math.min(Number(c.req.query('window_ms') ?? pollWindowMs), 120_000)
 
     const untrack = hub.track(roomId, me.uid)
     const ac = new AbortController()

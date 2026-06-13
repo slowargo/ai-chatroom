@@ -135,7 +135,7 @@ server.registerTool(
       'Long-poll once for new @mentions of you. Returns {woke:false} when nothing arrived within the window ' +
       '(call it again), or the full event backlog since your cursor when someone mentioned you.',
     inputSchema: {
-      window_sec: z.number().int().min(1).max(55).optional().describe('poll window seconds, default 25'),
+      window_sec: z.number().int().min(1).max(115).optional().describe('poll window seconds, default 25'),
       ...identityArgs,
     },
   },
