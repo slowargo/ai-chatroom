@@ -340,19 +340,31 @@ export function createApp(deps: AppDeps) {
     if (!TITLE_MILESTONES.includes(count)) return
     const lock = count >= TITLE_LOCK_AT
     const recent = store.recentMessages(roomId, 8)
+    console.log(`[title] room=${roomId} milestone=${count} lock=${lock}, generating title…`)
     void llm
       .genTitle(recent)
       .then((generated) => {
         const current = store.getRoom(roomId)
         if (!current || current.title_auto === 0) return
-        if ((lastTitledCount.get(roomId) ?? 0) > count) return // a later milestone already won the race
+        if ((lastTitledCount.get(roomId) ?? 0) > count) {
+          console.log(`[title] room=${roomId} milestone=${count} skipped: later milestone already applied`)
+          return
+        }
         const title = generated ?? fallbackTitle(recent)
-        if (!title || title === current.title) return
+        console.log(`[title] room=${roomId} milestone=${count} generated=${generated != null} title=${JSON.stringify(title)}`)
+        if (!title || title === current.title) {
+          if (lock && current.title) {
+            store.setRoomTitle(roomId, current.title, false)
+            console.log(`[title] room=${roomId} milestone=${count} title unchanged, locked title_auto=0`)
+          }
+          return
+        }
         lastTitledCount.set(roomId, count)
         store.setRoomTitle(roomId, title, !lock)
         emit(roomId, store.appendEvent(roomId, { kind: 'room_updated', payload: { title } }))
+        console.log(`[title] room=${roomId} milestone=${count} updated to ${JSON.stringify(title)} auto=${!lock}`)
       })
-      .catch((err) => console.warn('[llm] title decoration failed:', err))
+      .catch((err) => console.warn(`[title] room=${roomId} milestone=${count} failed:`, err))
   }
 
   app.get('/api/rooms/:id/events', auth, (c) => {
