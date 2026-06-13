@@ -67,7 +67,7 @@ input, textarea { background: var(--bg); color: var(--fg); border: 1px solid var
 .composer textarea { width: 100%; height: 72px; resize: none; }
 .mention-pop { position: absolute; bottom: 100%; left: 20px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
 .mention-pop button { background: none; color: var(--fg); text-align: left; border-radius: 0; padding: 8px 14px; font-weight: 400; }
-.mention-pop button:hover { background: #262b33; }
+.mention-pop button:hover, .mention-pop button.active { background: #262b33; }
 .mention-pop small { color: var(--dim); margin-left: 8px; }
 
 .members { width: 200px; background: var(--panel); border-left: 1px solid var(--border); padding: 14px; overflow-y: auto; }

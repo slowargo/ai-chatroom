@@ -207,8 +207,11 @@ function ChatView({
   const suggestions = mentionMatch
     ? members.filter((m) => m.uid !== identity.uid && m.nickname.startsWith(mentionMatch[1]))
     : []
+  const [mentionIdx, setMentionIdx] = useState(0)
+  const clampedIdx = Math.min(mentionIdx, Math.max(0, suggestions.length - 1))
   const completeMention = (nickname: string) => {
     setText(text.slice(0, text.length - mentionMatch![1].length) + nickname + ' ')
+    setMentionIdx(0)
     inputRef.current?.focus()
   }
 
@@ -230,8 +233,8 @@ function ChatView({
         <div className="composer">
           {suggestions.length > 0 && (
             <div className="mention-pop">
-              {suggestions.map((m) => (
-                <button key={m.uid} onClick={() => completeMention(m.nickname)}>
+              {suggestions.map((m, i) => (
+                <button key={m.uid} className={i === clampedIdx ? 'active' : ''} onClick={() => completeMention(m.nickname)}>
                   @{m.nickname} <small>{m.type === 'agent' ? m.persona_name ?? 'agent' : 'human'}</small>
                 </button>
               ))}
@@ -243,6 +246,28 @@ function ChatView({
             placeholder="发消息，@昵称 召唤 agent，Enter 发送 / Shift+Enter 换行"
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
+              if (suggestions.length > 0) {
+                if (e.key === 'Tab') {
+                  e.preventDefault()
+                  completeMention(suggestions[clampedIdx].nickname)
+                  return
+                }
+                if (e.key === 'ArrowUp') {
+                  e.preventDefault()
+                  setMentionIdx((clampedIdx - 1 + suggestions.length) % suggestions.length)
+                  return
+                }
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault()
+                  setMentionIdx((clampedIdx + 1) % suggestions.length)
+                  return
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setText(text.slice(0, text.length - mentionMatch![0].length))
+                  return
+                }
+              }
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
                 send()
