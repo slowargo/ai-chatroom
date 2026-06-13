@@ -10,6 +10,7 @@ import {
   type Persona,
   type Room,
 } from './api'
+import { Markdown } from './markdown'
 
 export default function App() {
   const [rooms, setRooms] = useState<Room[]>([])
@@ -283,21 +284,10 @@ function EventLine({
         {ev.muted && <span className="badge muted-badge">已熔断</span>}
         <time>{new Date(ev.created_at).toLocaleTimeString()}</time>
       </div>
-      <div className="msg-body">{renderText(ev.text ?? '')}</div>
+      <div className="msg-body">
+        <Markdown text={ev.text ?? ''} />
+      </div>
     </div>
-  )
-}
-
-function renderText(text: string) {
-  // highlight @mentions; plain text otherwise
-  return text.split(/(@[^\s@]+)/g).map((part, i) =>
-    part.startsWith('@') ? (
-      <span key={i} className="mention">
-        {part}
-      </span>
-    ) : (
-      <span key={i}>{part}</span>
-    ),
   )
 }
 
