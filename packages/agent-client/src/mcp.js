@@ -5,45 +5,22 @@
  * MCP client's tool timeout — the blocking CLI (`chatroom wait`) is the more
  * reliable way to stay resident; this is the secondary integration path.
  *
- * State file: $CHATROOM_STATE (default ./.chatroom-state.json), shared with the CLI.
+ * Stateless mode only: pass server, room_id and token to every tool call.
+ * There is no shared state file — each session owns its own identity.
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import { readFileSync, writeFileSync } from 'node:fs'
 import { z } from 'zod'
 import { ChatroomClient } from './client.js'
 
-const statePath = process.env.CHATROOM_STATE ?? './.chatroom-state.json'
 // default server so agents don't have to guess the port; override with CHATROOM_SERVER
 const DEFAULT_SERVER = process.env.CHATROOM_SERVER || 'http://localhost:8787'
 
-function loadState() {
-  try {
-    return JSON.parse(readFileSync(statePath, 'utf-8'))
-  } catch {
-    throw new Error(`no state file at ${statePath} — call chatroom_join first`)
-  }
-}
-
-/**
- * Resolve a client for a stateful tool call. Pass server+room_id+token together
- * to run statelessly — the caller owns its identity, which is required when
- * several sessions share one state file path. Omit all three to use the file.
- */
-function clientFor({ server, room_id, token }) {
-  if (server || room_id || token) {
-    // all-or-nothing: a partial set would silently fall back to the file and act as the wrong identity
-    if (!server || !room_id || !token) throw new Error('pass server, room_id and token together for stateless mode')
-    return new ChatroomClient({ server, room_id, token })
-  }
-  return new ChatroomClient(loadState())
-}
-
-/** Optional identity args shared by the stateful tools (see clientFor). */
+/** Required identity args for all authenticated tools. */
 const identityArgs = {
-  server: z.string().optional().describe('with room_id+token, run statelessly; omit all three to use the state file'),
-  room_id: z.string().optional(),
-  token: z.string().optional().describe('your identity token from chatroom_join — remember it for stateless calls'),
+  server: z.string().describe('chatroom server URL, e.g. http://localhost:8787'),
+  room_id: z.string().describe('room id to operate in'),
+  token: z.string().describe('your identity token from chatroom_join'),
 }
 
 function text(value) {
@@ -76,9 +53,9 @@ server.registerTool(
   'chatroom_join',
   {
     description:
-      'Join (or rejoin) a chatroom. Saves identity + cursor to the state file AND ' +
-      'returns your token, so you can either rely on the file or remember server+room_id+token ' +
-      'and pass them to the other tools (stateless mode, safe for concurrent sessions). ' +
+      'Join (or rejoin) a chatroom. Returns your token and identity on success. ' +
+      'If the server requires admin approval (agent without a prior token), returns ' +
+      '{status:"pending", request_id} — call chatroom_join_poll with the request_id to wait for approval. ' +
       'Returns your uid, nickname and the persona system prompt you must adopt. ' +
       'When you omit nickname and join without a persona, pass `agent` and `model` so you get a ' +
       'readable name (e.g. "pi-claude-sonnet") instead of a random suffix. ' +
@@ -90,30 +67,21 @@ server.registerTool(
       agent: z.string().optional().describe('your agent/runtime name, e.g. "claude", "pi" — used to name you when nickname is omitted'),
       model: z.string().optional().describe('short alphanumeric model abbreviation (only if known), e.g. "sonnet4" (Claude Sonnet 4), "opus4" (Claude Opus 4), "gpt4o" (GPT-4o), "dsv3" (DeepSeek V3). Combined with agent into nickname like "pi-sonnet4". Use only [a-zA-Z0-9-], no spaces or special chars. Omit this parameter entirely if you don\'t know your model — do NOT invent one.'),
       persona_id: z.string().optional(),
-      token: z.string().optional().describe('pass a previous token to rejoin without reading the state file'),
+      token: z.string().optional().describe('pass a previous token to rejoin as an existing identity'),
     },
   },
   async ({ server: url, room_id, nickname, agent, model, persona_id, token }) => {
-    let prevToken = token
-    if (!prevToken) {
-      try {
-        const prev = JSON.parse(readFileSync(statePath, 'utf-8'))
-        if (prev.room_id === room_id && prev.server === url) prevToken = prev.token
-      } catch {
-        /* fresh join */
-      }
-    }
     const client = new ChatroomClient({ server: url })
     const nicknameHint = [agent, model].filter(Boolean).join('-') || undefined
-    const joined = await client.join({ roomId: room_id, nickname, personaId: persona_id, token: prevToken, nicknameHint })
-    writeFileSync(
-      statePath,
-      JSON.stringify(
-        { server: url, room_id, uid: joined.uid, token: joined.token, nickname: joined.nickname, type: joined.type },
-        null,
-        2,
-      ),
-    )
+    const joined = await client.join({ roomId: room_id, nickname, personaId: persona_id, token, nicknameHint })
+    // pending approval — agent must poll
+    if (joined.status === 'pending') {
+      return text({
+        status: 'pending',
+        request_id: joined.request_id,
+        next: `Your join request is pending admin approval. Call chatroom_join_poll with server="${url}", room_id="${room_id}", request_id="${joined.request_id}" immediately, then use exponential backoff (2s, 4s, 8s…) between retries until you receive status "approved" or "rejected".`,
+      })
+    }
     return text({
       uid: joined.uid,
       token: joined.token,
@@ -123,8 +91,41 @@ server.registerTool(
       rejoined: joined.rejoined,
       cursor: joined.last_acked_seq,
       persona: joined.persona ? { name: joined.persona.name, system_prompt: joined.persona.system_prompt } : null,
-      next: 'call chatroom_wait in a loop to listen for mentions. When you receive mentions_you events: 1) chatroom_ack with latest_seq, 2) chatroom_post your reply with reply_to=<msg_id>, 3) loop back to chatroom_wait. ALWAYS use chatroom_post to send replies — do NOT just output text as the agent response. For concurrent sessions, pass server+room_id+token to those tools instead of relying on the shared state file.',
+      next: 'call chatroom_wait in a loop to listen for mentions. When you receive mentions_you events: 1) chatroom_ack with latest_seq, 2) chatroom_post your reply with reply_to=<msg_id>, 3) loop back to chatroom_wait. ALWAYS use chatroom_post to send replies — do NOT just output text as the agent response.',
     })
+  },
+)
+
+server.registerTool(
+  'chatroom_join_poll',
+  {
+    description:
+      'Poll for the result of a pending join request (up to 60s long-poll). ' +
+      'Call this after chatroom_join returns {status:"pending"}. ' +
+      'Returns {status:"pending"} if still waiting, ' +
+      '{status:"approved", uid, token, nickname, ...} on approval, ' +
+      'or {status:"rejected", reason?} on rejection. ' +
+      'Use exponential backoff between calls: first call immediately, then wait 2s, 4s, 8s, etc.',
+    inputSchema: {
+      server: z.string().describe('chatroom server URL'),
+      room_id: z.string().describe('room id from chatroom_join'),
+      request_id: z.string().describe('request_id from chatroom_join pending response'),
+    },
+  },
+  async ({ server: url, room_id, request_id }) => {
+    const client = new ChatroomClient({ server: url })
+    const result = await client.pollPendingJoin({ roomId: room_id, requestId: request_id })
+    if (result.status === 'approved') {
+      return text({
+        ...result,
+        next: `Join approved! You are now "${result.assigned_nickname}" (uid: ${result.assigned_uid}). Use token="${result.token}" with server="${url}" and room_id="${room_id}" for chatroom_wait, chatroom_post, etc.`,
+      })
+    }
+    if (result.status === 'rejected') {
+      return text({ ...result, next: `Join rejected. Reason: ${result.reason ?? 'none'}. You may try chatroom_join again.` })
+    }
+    // still pending
+    return text({ ...result, next: `Still pending. Call chatroom_join_poll again with the same request_id.` })
   },
 )
 
@@ -140,7 +141,7 @@ server.registerTool(
     },
   },
   async ({ window_sec, server, room_id, token }) => {
-    const result = await clientFor({ server, room_id, token }).waitOnce((window_sec ?? 25) * 1000)
+    const result = await new ChatroomClient({ server, room_id, token }).waitOnce((window_sec ?? 25) * 1000)
     // Add actionable next steps when there are mentions to reply to
     const mentionsYou = result.events?.filter(e => e.mentions_you && !e.replied_by_you) || []
     if (mentionsYou.length > 0) {
@@ -159,7 +160,7 @@ server.registerTool(
     inputSchema: { text: z.string(), reply_to: z.string().optional(), ...identityArgs },
   },
   async ({ text: body, reply_to, server, room_id, token }) =>
-    text(await clientFor({ server, room_id, token }).post({ text: body, replyTo: reply_to })),
+    text(await new ChatroomClient({ server, room_id, token }).post({ text: body, replyTo: reply_to })),
 )
 
 server.registerTool(
@@ -168,7 +169,8 @@ server.registerTool(
     description: 'Advance your read cursor after handling a backlog (pass the latest_seq from chatroom_wait).',
     inputSchema: { seq: z.number().int(), ...identityArgs },
   },
-  async ({ seq, server, room_id, token }) => text(await clientFor({ server, room_id, token }).ack(seq)),
+  async ({ seq, server, room_id, token }) =>
+    text(await new ChatroomClient({ server, room_id, token }).ack(seq)),
 )
 
 server.registerTool(
@@ -178,7 +180,7 @@ server.registerTool(
     inputSchema: { after: z.number().int().optional(), limit: z.number().int().optional(), ...identityArgs },
   },
   async ({ after, limit, server, room_id, token }) =>
-    text(await clientFor({ server, room_id, token }).history({ after, limit })),
+    text(await new ChatroomClient({ server, room_id, token }).history({ after, limit })),
 )
 
 server.registerTool(
@@ -187,7 +189,8 @@ server.registerTool(
     description: 'List room members with online status.',
     inputSchema: { ...identityArgs },
   },
-  async ({ server, room_id, token }) => text(await clientFor({ server, room_id, token }).members()),
+  async ({ server, room_id, token }) =>
+    text(await new ChatroomClient({ server, room_id, token }).members()),
 )
 
 await server.connect(new StdioServerTransport())

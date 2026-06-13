@@ -44,6 +44,19 @@ export interface ChatEvent {
   created_at: string
 }
 
+export interface PendingJoin {
+  request_id: string
+  room_id: string
+  nickname_requested: string
+  persona_id?: string
+  created_at: number
+  status: 'pending' | 'approved' | 'rejected'
+  assigned_uid?: string
+  assigned_nickname?: string
+  token?: string
+  reason?: string
+}
+
 /** ChatEvent plus per-viewer annotations added when listing a backlog */
 export interface AnnotatedEvent extends ChatEvent {
   /** true when this event mentions the viewer and the viewer already replied to it */

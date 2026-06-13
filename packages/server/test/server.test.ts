@@ -30,6 +30,26 @@ async function joinRoom(roomId: string, body: Record<string, unknown>) {
   return json(await api(`/api/rooms/${roomId}/join`, { method: 'POST', body: JSON.stringify(body) }))
 }
 
+/** Join as agent with auto-approval via an admin token. */
+async function joinAgent(roomId: string, body: Record<string, unknown>, adminToken: string) {
+  const res = await api(`/api/rooms/${roomId}/join`, {
+    method: 'POST',
+    body: JSON.stringify({ type: 'agent', ...body }),
+  })
+  const data = (await res.json()) as any
+  if (res.status === 202 && data.request_id) {
+    const approved = await json(
+      await api(`/api/rooms/${roomId}/pending-joins/${data.request_id}/approve`, {
+        method: 'POST',
+        token: adminToken,
+        body: JSON.stringify({ action: 'new' }),
+      }),
+    )
+    return { uid: approved.assigned_uid, token: approved.token, nickname: approved.assigned_nickname, rejoined: false }
+  }
+  return data
+}
+
 async function post(roomId: string, token: string, text: string, extra: Record<string, unknown> = {}) {
   return json(
     await api(`/api/rooms/${roomId}/messages`, {
@@ -60,11 +80,19 @@ describe('join & identity', () => {
     expect(a.uid).toBeTruthy()
     expect(a.token).toBeTruthy()
 
-    const dup = await api(`/api/rooms/${roomId}/join`, {
+    // agent without token gets 202 pending; approving with a taken nickname should fail
+    const pendingRes = await api(`/api/rooms/${roomId}/join`, {
       method: 'POST',
       body: JSON.stringify({ nickname: 'alice', type: 'agent' }),
     })
-    expect(dup.status).toBe(409)
+    expect(pendingRes.status).toBe(202)
+    const { request_id } = (await pendingRes.json()) as { request_id: string }
+    const approveRes = await api(`/api/rooms/${roomId}/pending-joins/${request_id}/approve`, {
+      method: 'POST',
+      token: a.token,
+      body: JSON.stringify({ action: 'new', nickname: 'alice' }),
+    })
+    expect(approveRes.status).toBe(409)
   })
 
   it('rejects nicknames containing whitespace or "@" with 400', async () => {
@@ -73,7 +101,7 @@ describe('join & identity', () => {
     for (const nickname of ['two words', 'a@b', 'tab\tname']) {
       const res = await api(`/api/rooms/${roomId}/join`, {
         method: 'POST',
-        body: JSON.stringify({ nickname, type: 'agent' }),
+        body: JSON.stringify({ nickname, type: 'human' }),
       })
       expect(res.status).toBe(400)
     }
@@ -81,21 +109,23 @@ describe('join & identity', () => {
 
   it('sanitizes auto-generated nicknames so they pass validation', async () => {
     const roomId = await createRoom()
+    const admin = await joinRoom(roomId, { nickname: '_admin', type: 'human' })
     const p = await json(
       await api('/api/personas', {
         method: 'POST',
         body: JSON.stringify({ name: 'Senior Architect', system_prompt: 'x' }),
       }),
     )
-    // unconfigured Llm → falls back to the persona name, which carries a space
-    const a = await joinRoom(roomId, { type: 'agent', persona_id: p.id })
+    // persona name with space is sanitized via the pending flow
+    const a = await joinAgent(roomId, { persona_id: p.id }, admin.token)
     expect(a.nickname).not.toMatch(/[\s@]/)
     expect(a.nickname.length).toBeLessThanOrEqual(32)
   })
 
   it('rejoin with token reclaims uid and cursor', async () => {
     const roomId = await createRoom()
-    const a = await joinRoom(roomId, { nickname: 'bot', type: 'agent' })
+    const admin = await joinRoom(roomId, { nickname: '_admin', type: 'human' })
+    const a = await joinAgent(roomId, { nickname: 'bot' }, admin.token)
     await api(`/api/rooms/${roomId}/ack`, { method: 'POST', token: a.token, body: JSON.stringify({ seq: 1 }) })
 
     const again = await joinRoom(roomId, { token: a.token })
@@ -106,64 +136,63 @@ describe('join & identity', () => {
 
   it('generates a fallback nickname when none is given', async () => {
     const roomId = await createRoom()
+    const admin = await joinRoom(roomId, { nickname: '_admin', type: 'human' })
     const p = await json(
       await api('/api/personas', {
         method: 'POST',
         body: JSON.stringify({ name: 'architect', system_prompt: 'You are a software architect.' }),
       }),
     )
-    const a = await joinRoom(roomId, { type: 'agent', persona_id: p.id })
-    expect(a.nickname).toMatch(/^architect-/)
-    expect(a.persona.system_prompt).toContain('architect')
+    const a = await joinAgent(roomId, { persona_id: p.id }, admin.token)
+    expect(a.nickname).toMatch(/^architect/)
   })
 
   it('uses nickname_hint (e.g. agent-model) as the base when no nickname/persona given', async () => {
     const roomId = await createRoom()
-    const a = await joinRoom(roomId, { type: 'agent', nickname_hint: 'claude-opus' })
+    const admin = await joinRoom(roomId, { nickname: '_admin', type: 'human' })
+    const a = await joinAgent(roomId, { nickname_hint: 'claude-opus' }, admin.token)
     expect(a.nickname).toBe('claude-opus')
-    // a second joiner with the same hint must not collide
-    const b = await joinRoom(roomId, { type: 'agent', nickname_hint: 'claude-opus' })
-    expect(b.nickname).toMatch(/^claude-opus-/)
+    // a second joiner with the same hint gets a conflict at approval (same nickname_requested)
+    const res2 = await api(`/api/rooms/${roomId}/join`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'agent', nickname_hint: 'claude-opus' }),
+    })
+    const { request_id } = (await res2.json()) as { request_id: string }
+    const approve2 = await api(`/api/rooms/${roomId}/pending-joins/${request_id}/approve`, {
+      method: 'POST',
+      token: admin.token,
+      body: JSON.stringify({ action: 'new', nickname: 'claude-opus-2' }),
+    })
+    const b = (await approve2.json()) as any
+    expect(b.assigned_nickname).toBe('claude-opus-2')
   })
 
-  it('survives a concurrent same-base join: both get distinct nicknames, no 409', async () => {
-    // A persona introduces an await (genNickname) between the taken-check and joinRoom, and a
-    // deterministic generated name makes two concurrent joins pick the same base; the second then
-    // hits joinRoom's ConflictError pre-check and must recover with a suffix instead of a 409.
-    const llm = new Llm()
-    ;(llm as unknown as { genNickname: () => Promise<string> }).genNickname = async () => 'twin'
-    const localApp = createApp({
-      store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
-      hub: new Hub(),
-      llm,
-      pollWindowMs: 100,
-    })
-    const call = (path: string, body: unknown) =>
-      Promise.resolve(
-        localApp.request(path, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-        }),
-      ).then((r) => r.json())
-    const roomId = (await call('/api/rooms', {})).id
-    const persona = await call('/api/personas', { name: 'twins', system_prompt: 'x' })
-    const [a, b] = await Promise.all([
-      call(`/api/rooms/${roomId}/join`, { type: 'agent', persona_id: persona.id }),
-      call(`/api/rooms/${roomId}/join`, { type: 'agent', persona_id: persona.id }),
+  it('concurrent agent joins both get pending status', async () => {
+    const roomId = await createRoom()
+    const [r1, r2] = await Promise.all([
+      api(`/api/rooms/${roomId}/join`, {
+        method: 'POST',
+        body: JSON.stringify({ type: 'agent', nickname: 'twin' }),
+      }),
+      api(`/api/rooms/${roomId}/join`, {
+        method: 'POST',
+        body: JSON.stringify({ type: 'agent', nickname: 'twin' }),
+      }),
     ])
-    expect(a.nickname).toBeTruthy()
-    expect(b.nickname).toBeTruthy()
-    expect(a.nickname).not.toBe(b.nickname) // the loser got a suffix instead of a ConflictError
+    expect(r1.status).toBe(202)
+    expect(r2.status).toBe(202)
+    const d1 = (await r1.json()) as { request_id: string }
+    const d2 = (await r2.json()) as { request_id: string }
+    expect(d1.request_id).not.toBe(d2.request_id)
   })
 })
 
 describe('messages, mentions, seq', () => {
   it('does not false-positive on substring nicknames (e.g. @bo vs @bob)', async () => {
     const roomId = await createRoom()
-    const bo = await joinRoom(roomId, { nickname: 'bo', type: 'agent' })
-    const bob = await joinRoom(roomId, { nickname: 'bob', type: 'agent' })
     const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
+    const bo = await joinAgent(roomId, { nickname: 'bo' }, alice.token)
+    const bob = await joinAgent(roomId, { nickname: 'bob' }, alice.token)
 
     const m = await post(roomId, alice.token, 'hey @bob what do you think?')
     expect(m.mentions).toContain(bob.uid)
@@ -177,9 +206,9 @@ describe('messages, mentions, seq', () => {
 
   it('does not false-positive on CJK substring nicknames (e.g. @架构 vs @架构师)', async () => {
     const roomId = await createRoom()
-    const short = await joinRoom(roomId, { nickname: '架构', type: 'agent' })
-    const long = await joinRoom(roomId, { nickname: '架构师', type: 'agent' })
     const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
+    const short = await joinAgent(roomId, { nickname: '架构' }, alice.token)
+    const long = await joinAgent(roomId, { nickname: '架构师' }, alice.token)
 
     const m = await post(roomId, alice.token, '@架构师 这个方案怎么看？')
     expect(m.mentions).toContain(long.uid)
@@ -194,7 +223,7 @@ describe('messages, mentions, seq', () => {
   it('assigns monotonic seq and resolves @nickname server-side', async () => {
     const roomId = await createRoom()
     const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
-    const bot = await joinRoom(roomId, { nickname: '架构师', type: 'agent' })
+    const bot = await joinAgent(roomId, { nickname: '架构师' }, alice.token)
 
     const m1 = await post(roomId, alice.token, 'hello everyone')
     const m2 = await post(roomId, alice.token, '@架构师 请评审这个方案')
@@ -213,7 +242,7 @@ describe('wait long-poll', () => {
   it('returns immediately with backlog when an unread mention already exists (offline catch-up)', async () => {
     const roomId = await createRoom()
     const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
-    const bot = await joinRoom(roomId, { nickname: 'bot', type: 'agent' })
+    const bot = await joinAgent(roomId, { nickname: 'bot' }, alice.token)
 
     await post(roomId, alice.token, 'context message without mention')
     await post(roomId, alice.token, '@bot are you there?')
@@ -229,7 +258,8 @@ describe('wait long-poll', () => {
 
   it('times out with empty result when nothing relevant happens', async () => {
     const roomId = await createRoom()
-    const bot = await joinRoom(roomId, { nickname: 'bot', type: 'agent' })
+    const admin = await joinRoom(roomId, { nickname: '_admin', type: 'human' })
+    const bot = await joinAgent(roomId, { nickname: 'bot' }, admin.token)
     const res = await wait(roomId, bot.token, 50)
     expect(res.woke).toBe(false)
     expect(res.events).toEqual([])
@@ -238,7 +268,7 @@ describe('wait long-poll', () => {
   it('wakes a blocked wait when a mention arrives', async () => {
     const roomId = await createRoom()
     const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
-    const bot = await joinRoom(roomId, { nickname: 'bot', type: 'agent' })
+    const bot = await joinAgent(roomId, { nickname: 'bot' }, alice.token)
 
     const pending = wait(roomId, bot.token, 2000)
     await new Promise((r) => setTimeout(r, 20))
@@ -250,7 +280,7 @@ describe('wait long-poll', () => {
   it('does not wake on its own messages or after it already replied', async () => {
     const roomId = await createRoom()
     const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
-    const bot = await joinRoom(roomId, { nickname: 'bot', type: 'agent' })
+    const bot = await joinAgent(roomId, { nickname: 'bot' }, alice.token)
 
     const ask = await post(roomId, alice.token, '@bot ping')
     await post(roomId, bot.token, '@alice pong', { in_reply_to: ask.msg_id })
@@ -272,7 +302,7 @@ describe('ack cursor', () => {
   it('advances monotonically and feeds the wait cursor', async () => {
     const roomId = await createRoom()
     const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
-    const bot = await joinRoom(roomId, { nickname: 'bot', type: 'agent' })
+    const bot = await joinAgent(roomId, { nickname: 'bot' }, alice.token)
 
     const m = await post(roomId, alice.token, '@bot first')
     let r = await json(
@@ -295,8 +325,8 @@ describe('agent loop brake', () => {
   it('mutes agent-to-agent mentions after N consecutive agent messages and emits one system event', async () => {
     const roomId = await createRoom()
     const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
-    const a = await joinRoom(roomId, { nickname: 'agentA', type: 'agent' })
-    const b = await joinRoom(roomId, { nickname: 'agentB', type: 'agent' })
+    const a = await joinAgent(roomId, { nickname: 'agentA' }, alice.token)
+    const b = await joinAgent(roomId, { nickname: 'agentB' }, alice.token)
 
     // follow the real protocol: each reply carries in_reply_to and the agent acks afterwards
     const ack = (token: string, seq: number) =>
@@ -339,7 +369,7 @@ describe('room title decoration (LLM disabled fallback)', () => {
     let room = await json(await api(`/api/rooms/${roomId}`))
     expect(room.title).not.toBe('') // milestone 1: named immediately, even from a lone URL
 
-    const bot = await joinRoom(roomId, { nickname: 'bot', type: 'agent' })
+    const bot = await joinAgent(roomId, { nickname: 'bot' }, alice.token)
     await post(roomId, bot.token, 'Summary: we are discussing the event-log schema')
     await new Promise((r) => setTimeout(r, 20))
     room = await json(await api(`/api/rooms/${roomId}`))

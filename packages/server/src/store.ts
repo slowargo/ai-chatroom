@@ -7,6 +7,7 @@ import type {
   EventKind,
   Participant,
   ParticipantType,
+  PendingJoin,
   Persona,
   Room,
 } from './types.js'
@@ -63,6 +64,8 @@ function rowToEvent(r: EventRowRaw): ChatEvent {
 }
 
 export class Store {
+  private pendingJoins = new Map<string, PendingJoin>()
+
   constructor(
     private db: Database,
     private opts: StoreOptions = { brakeAfter: 3 },
@@ -423,5 +426,84 @@ export class Store {
       )
       .all(roomId, limit) as Array<{ nickname: string; text: string }>
     return rows.reverse()
+  }
+
+  // ---- pending joins ----
+
+  createPendingJoin(roomId: string, nicknameRequested: string, personaId?: string): PendingJoin {
+    const pj: PendingJoin = {
+      request_id: ulid(),
+      room_id: roomId,
+      nickname_requested: nicknameRequested,
+      persona_id: personaId,
+      created_at: Date.now(),
+      status: 'pending',
+    }
+    this.pendingJoins.set(pj.request_id, pj)
+    return pj
+  }
+
+  getPendingJoin(requestId: string): PendingJoin | undefined {
+    return this.pendingJoins.get(requestId)
+  }
+
+  listPendingJoins(roomId: string): PendingJoin[] {
+    return [...this.pendingJoins.values()].filter((pj) => pj.room_id === roomId)
+  }
+
+  /**
+   * Approve a pending join.
+   * action='new': create a new participant with the given nickname (defaults to requested nickname).
+   * action='bind': generate a new token for the existing member identified by bindUid.
+   */
+  approvePendingJoin(
+    requestId: string,
+    opts: { action: 'new' | 'bind'; nickname?: string; bindUid?: string },
+  ): { pj: PendingJoin; events: ChatEvent[] } {
+    const pj = this.pendingJoins.get(requestId)
+    if (!pj) throw new ValidationError('pending join not found')
+    if (pj.status !== 'pending') throw new ValidationError('pending join is no longer pending')
+
+    let events: ChatEvent[] = []
+    if (opts.action === 'new') {
+      const nickname = opts.nickname?.trim() || pj.nickname_requested
+      const result = this.joinRoom(pj.room_id, {
+        nickname,
+        type: 'agent',
+        persona_id: pj.persona_id ?? null,
+      })
+      pj.assigned_uid = result.participant.uid
+      pj.assigned_nickname = result.participant.nickname
+      pj.token = result.participant.token
+      events = result.events
+    } else if (opts.action === 'bind') {
+      if (!opts.bindUid) throw new ValidationError('bindUid is required for bind action')
+      const existing = this.getParticipant(opts.bindUid)
+      if (!existing || existing.room_id !== pj.room_id) throw new ValidationError('member not found in this room')
+      const newToken = randomBytes(24).toString('base64url')
+      this.db.prepare('UPDATE participants SET token = ? WHERE uid = ?').run(newToken, existing.uid)
+      pj.assigned_uid = existing.uid
+      pj.assigned_nickname = existing.nickname
+      pj.token = newToken
+    } else {
+      throw new ValidationError('invalid action')
+    }
+    pj.status = 'approved'
+    this.pendingJoins.set(requestId, pj)
+    return { pj, events }
+  }
+
+  deletePendingJoin(requestId: string): void {
+    this.pendingJoins.delete(requestId)
+  }
+
+  rejectPendingJoin(requestId: string, reason?: string): PendingJoin {
+    const pj = this.pendingJoins.get(requestId)
+    if (!pj) throw new ValidationError('pending join not found')
+    if (pj.status !== 'pending') throw new ValidationError('pending join is no longer pending')
+    pj.status = 'rejected'
+    pj.reason = reason
+    this.pendingJoins.set(requestId, pj)
+    return pj
   }
 }

@@ -9,6 +9,7 @@ import {
   type Identity,
   type LlmInfo,
   type Member,
+  type PendingJoin,
   type Persona,
   type Room,
 } from './api'
@@ -177,6 +178,7 @@ function ChatView({
 }) {
   const [events, setEvents] = useState<ChatEvent[]>([])
   const [members, setMembers] = useState<Member[]>([])
+  const [pendingJoins, setPendingJoins] = useState<PendingJoin[]>([])
   const [text, setText] = useState('')
   const [error, setError] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -195,6 +197,17 @@ function ChatView({
     const timer = setInterval(refreshMembers, 10_000) // presence has no event; poll it
     return () => clearInterval(timer)
   }, [refreshMembers])
+
+  // Poll pending joins every 5s (human/admin users only)
+  const refreshPendingJoins = useCallback(() => {
+    api.pendingJoins(roomId, identity.token).then(setPendingJoins).catch(() => {/* non-admin: ignore */})
+  }, [roomId, identity.token])
+
+  useEffect(() => {
+    refreshPendingJoins()
+    const timer = setInterval(refreshPendingJoins, 5_000)
+    return () => clearInterval(timer)
+  }, [refreshPendingJoins])
 
   useEffect(() => {
     const es = new EventSource(`/api/rooms/${roomId}/stream?token=${identity.token}`)
@@ -301,6 +314,15 @@ function ChatView({
         </div>
       </main>
       <aside className="members">
+        {pendingJoins.length > 0 && (
+          <PendingApprovalPanel
+            roomId={roomId}
+            token={identity.token}
+            requests={pendingJoins}
+            members={members}
+            onDone={() => { refreshPendingJoins(); refreshMembers() }}
+          />
+        )}
         <h3>成员</h3>
         {members.map((m) => (
           <div key={m.uid} className="member">
@@ -355,6 +377,133 @@ function EventLine({
       <div className="msg-body">
         <Markdown text={ev.text ?? ''} mentionNames={mentionNames} />
       </div>
+    </div>
+  )
+}
+
+function PendingApprovalPanel({
+  roomId,
+  token,
+  requests,
+  members,
+  onDone,
+}: {
+  roomId: string
+  token: string
+  requests: PendingJoin[]
+  members: Member[]
+  onDone: () => void
+}) {
+  // Per-request local state: nickname input, selected bind uid, reject reason
+  const [nicknames, setNicknames] = useState<Record<string, string>>({})
+  const [bindUids, setBindUids] = useState<Record<string, string>>({})
+  const [reasons, setReasons] = useState<Record<string, string>>({})
+  const [errors, setErrors] = useState<Record<string, string>>({})
+
+  // Agent-only members for the bind dropdown
+  const agentMembers = members.filter((m) => m.type === 'agent')
+
+  const nickFor = (req: PendingJoin) => nicknames[req.request_id] ?? req.nickname_requested
+  const bindFor = (req: PendingJoin) => {
+    if (bindUids[req.request_id] !== undefined) return bindUids[req.request_id]
+    // auto-select if nickname matches an existing agent member
+    const match = agentMembers.find((m) => m.nickname === req.nickname_requested)
+    return match?.uid ?? ''
+  }
+
+  const approveNew = async (req: PendingJoin) => {
+    try {
+      await api.approvePendingJoin(roomId, req.request_id, token, {
+        action: 'new',
+        nickname: nickFor(req),
+      })
+      onDone()
+    } catch (err) {
+      setErrors((prev) => ({ ...prev, [req.request_id]: (err as Error).message }))
+    }
+  }
+
+  const approveBind = async (req: PendingJoin) => {
+    const uid = bindFor(req)
+    if (!uid) return
+    try {
+      await api.approvePendingJoin(roomId, req.request_id, token, {
+        action: 'bind',
+        bind_uid: uid,
+      })
+      onDone()
+    } catch (err) {
+      setErrors((prev) => ({ ...prev, [req.request_id]: (err as Error).message }))
+    }
+  }
+
+  const reject = async (req: PendingJoin) => {
+    try {
+      await api.rejectPendingJoin(roomId, req.request_id, token, reasons[req.request_id])
+      onDone()
+    } catch (err) {
+      setErrors((prev) => ({ ...prev, [req.request_id]: (err as Error).message }))
+    }
+  }
+
+  return (
+    <div className="pending-panel">
+      <h4>待审批加入请求</h4>
+      {requests.map((req) => (
+        <div key={req.request_id} className="pending-item">
+          <div className="pending-info">
+            <span className="nick agent">{req.nickname_requested}</span>
+            {req.persona_name && <span className="badge">{req.persona_name}</span>}
+            <time>{new Date(req.created_at).toLocaleTimeString()}</time>
+          </div>
+          <div className="pending-actions">
+            <label>新成员</label>
+            <input
+              value={nickFor(req)}
+              onChange={(e) =>
+                setNicknames((prev) => ({ ...prev, [req.request_id]: e.target.value }))
+              }
+              size={12}
+            />
+            <button onClick={() => approveNew(req)}>批准（新）</button>
+          </div>
+          {agentMembers.length > 0 && (
+            <div className="pending-actions">
+              <label>绑定既有</label>
+              <select
+                value={bindFor(req)}
+                onChange={(e) =>
+                  setBindUids((prev) => ({ ...prev, [req.request_id]: e.target.value }))
+                }
+              >
+                <option value="">-- 选择成员 --</option>
+                {agentMembers.map((m) => (
+                  <option key={m.uid} value={m.uid}>
+                    {m.nickname}
+                  </option>
+                ))}
+              </select>
+              <button disabled={!bindFor(req)} onClick={() => approveBind(req)}>
+                批准（绑定）
+              </button>
+            </div>
+          )}
+          <div className="pending-actions">
+            <input
+              placeholder="拒绝原因（可选）"
+              value={reasons[req.request_id] ?? ''}
+              onChange={(e) =>
+                setReasons((prev) => ({ ...prev, [req.request_id]: e.target.value }))
+              }
+              size={16}
+            />
+            <button className="reject" onClick={() => reject(req)}>
+              拒绝
+            </button>
+          </div>
+          {errors[req.request_id] && <p className="error">{errors[req.request_id]}</p>}
+        </div>
+      ))}
     </div>
   )
 }

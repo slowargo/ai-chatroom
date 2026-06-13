@@ -38,6 +38,20 @@ export interface Identity {
   nickname: string
 }
 
+export interface PendingJoin {
+  request_id: string
+  room_id: string
+  nickname_requested: string
+  persona_id?: string
+  persona_name?: string | null
+  created_at: number
+  status: 'pending' | 'approved' | 'rejected'
+  assigned_uid?: string
+  assigned_nickname?: string
+  token?: string
+  reason?: string
+}
+
 export interface LlmInfo {
   enabled: boolean
   provider: string | null
@@ -77,6 +91,16 @@ export const api = {
   llm: () => fetch('/api/llm').then((r) => j<LlmInfo>(r)),
   setLlmModel: (model: string) => post('/api/llm/model', { model }).then((r) => j<Omit<LlmInfo, 'models'>>(r)),
   deleteRoom: (id: string) => fetch(`/api/rooms/${id}`, { method: 'DELETE' }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); }),
+  pendingJoins: (roomId: string, token: string) =>
+    fetch(`/api/rooms/${roomId}/pending-joins?token=${token}`).then((r) => j<PendingJoin[]>(r)),
+  approvePendingJoin: (
+    roomId: string,
+    requestId: string,
+    token: string,
+    body: { action: 'new' | 'bind'; nickname?: string; bind_uid?: string },
+  ) => post(`/api/rooms/${roomId}/pending-joins/${requestId}/approve`, body, token).then((r) => j<PendingJoin>(r)),
+  rejectPendingJoin: (roomId: string, requestId: string, token: string, reason?: string) =>
+    post(`/api/rooms/${roomId}/pending-joins/${requestId}/reject`, { reason }, token).then((r) => j<PendingJoin>(r)),
 }
 
 export function identityKey(roomId: string) {

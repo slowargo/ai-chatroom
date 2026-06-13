@@ -8,6 +8,9 @@ import type { Llm } from './llm.js'
 import { ConflictError, ValidationError, type Store } from './store.js'
 import type { ChatEvent, Participant, ParticipantType } from './types.js'
 
+/** Resolve callbacks waiting for a pending join decision, keyed by request_id */
+const pendingJoinWaiters = new Map<string, ((result: unknown) => void)[]>()
+
 export interface AppDeps {
   store: Store
   hub: Hub
@@ -76,6 +79,13 @@ export function createApp(deps: AppDeps) {
     await next()
   })
 
+  /** Admin-only middleware: requires auth middleware to have run first, then checks type=human */
+  const adminOnly = createMiddleware<Env>(async (c, next) => {
+    const me = c.get('me')
+    if (me.type !== 'human') return c.json({ error: 'admin access required' }, 403)
+    await next()
+  })
+
   app.onError((err, c) => {
     if (err instanceof ValidationError) return c.json({ error: err.message }, 400)
     if (err instanceof ConflictError) return c.json({ error: err.message }, 409)
@@ -138,6 +148,16 @@ export function createApp(deps: AppDeps) {
     const persona = body.persona_id ? store.getPersona(body.persona_id) : undefined
     if (body.persona_id && !persona) return c.json({ error: 'persona not found' }, 404)
 
+    // Agent without a token goes through approval flow
+    if (type === 'agent' && !body.token) {
+      const hint = body.nickname_hint?.trim().replace(/[@\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 20)
+      const nicknameRequested = body.nickname?.trim() || hint
+        || persona?.name?.replace(/[@\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24)
+        || 'agent'
+      const pj = store.createPendingJoin(roomId, nicknameRequested, body.persona_id)
+      return c.json({ status: 'pending', request_id: pj.request_id }, 202)
+    }
+
     let nickname = body.nickname?.trim()
     const autoNick = !nickname && !body.token
     let base = ''
@@ -190,6 +210,84 @@ export function createApp(deps: AppDeps) {
       },
       rejoined ? 200 : 201,
     )
+  })
+
+  // ---- pending joins ----
+
+  app.get('/api/rooms/:id/pending-joins', auth, adminOnly, (c) => {
+    const roomId = c.req.param('id')
+    if (!store.getRoom(roomId)) return c.json({ error: 'room not found' }, 404)
+    return c.json(
+      store
+        .listPendingJoins(roomId)
+        .filter((pj) => pj.status === 'pending')
+        .map((pj) => ({
+          ...pj,
+          persona_name: pj.persona_id ? store.getPersona(pj.persona_id)?.name ?? null : null,
+        })),
+    )
+  })
+
+  app.post('/api/rooms/:id/pending-joins/:rid/approve', auth, adminOnly, async (c) => {
+    const roomId = c.req.param('id')
+    const rid = c.req.param('rid')
+    if (!store.getRoom(roomId)) return c.json({ error: 'room not found' }, 404)
+    const pending = store.getPendingJoin(rid)
+    if (!pending || pending.room_id !== roomId) return c.json({ error: 'request not found in this room' }, 404)
+    const body = (await c.req.json().catch(() => ({}))) as {
+      action?: 'new' | 'bind'
+      nickname?: string
+      bind_uid?: string
+    }
+    if (!body.action) return c.json({ error: 'action is required' }, 400)
+    const { pj, events } = store.approvePendingJoin(rid, { action: body.action, nickname: body.nickname, bindUid: body.bind_uid })
+    emit(roomId, events)
+    const waiters = pendingJoinWaiters.get(rid) ?? []
+    pendingJoinWaiters.delete(rid)
+    for (const resolve of waiters) resolve(pj)
+    return c.json(pj)
+  })
+
+  app.post('/api/rooms/:id/pending-joins/:rid/reject', auth, adminOnly, async (c) => {
+    const roomId = c.req.param('id')
+    const rid = c.req.param('rid')
+    if (!store.getRoom(roomId)) return c.json({ error: 'room not found' }, 404)
+    const pending = store.getPendingJoin(rid)
+    if (!pending || pending.room_id !== roomId) return c.json({ error: 'request not found in this room' }, 404)
+    const body = (await c.req.json().catch(() => ({}))) as { reason?: string }
+    const pj = store.rejectPendingJoin(rid, body.reason)
+    const waiters = pendingJoinWaiters.get(rid) ?? []
+    pendingJoinWaiters.delete(rid)
+    for (const resolve of waiters) resolve(pj)
+    return c.json(pj)
+  })
+
+  /** No-auth poll endpoint: agent waits up to 60s for admin decision */
+  app.get('/api/rooms/:id/pending-joins/:rid/poll', async (c) => {
+    const rid = c.req.param('rid')
+    const pj = store.getPendingJoin(rid)
+    if (!pj) return c.json({ error: 'request not found' }, 404)
+    if (pj.status !== 'pending') {
+      store.deletePendingJoin(rid)
+      return c.json(pj)
+    }
+
+    const result = await new Promise<unknown>((resolve) => {
+      const existing = pendingJoinWaiters.get(rid) ?? []
+      existing.push(resolve)
+      pendingJoinWaiters.set(rid, existing)
+      setTimeout(() => {
+        const waiters = pendingJoinWaiters.get(rid)
+        if (waiters) {
+          const idx = waiters.indexOf(resolve)
+          if (idx !== -1) waiters.splice(idx, 1)
+        }
+        resolve({ status: 'pending' })
+      }, 60_000)
+    })
+    const final = result as { status?: string }
+    if (final.status && final.status !== 'pending') store.deletePendingJoin(rid)
+    return c.json(result)
   })
 
   app.get('/api/rooms/:id/members', auth, (c) => {
