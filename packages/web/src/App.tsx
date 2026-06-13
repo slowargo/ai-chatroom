@@ -270,7 +270,7 @@ function ChatView({
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
               if (suggestions.length > 0) {
-                if (e.key === 'Tab') {
+                if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
                   e.preventDefault()
                   completeMention(suggestions[clampedIdx].nickname)
                   return
