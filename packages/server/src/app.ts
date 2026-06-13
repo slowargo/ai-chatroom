@@ -168,6 +168,7 @@ export function createApp(deps: AppDeps) {
           type,
           persona_id: persona?.id ?? null,
           token: body.token ?? null,
+          reclaim: !autoNick,
         })
         break
       } catch (err) {

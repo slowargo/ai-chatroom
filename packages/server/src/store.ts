@@ -140,22 +140,49 @@ export class Store {
 
   // ---- participants ----
 
-  /** Rejoin with a token reclaims the original uid and cursor. */
+  /** Rejoin with a token reclaims the original uid and cursor. Pass a different nickname to rename. */
   joinRoom(
     roomId: string,
-    input: { nickname: string; type: ParticipantType; persona_id?: string | null; token?: string | null },
+    input: { nickname: string; type: ParticipantType; persona_id?: string | null; token?: string | null; reclaim?: boolean },
   ): { participant: Participant; rejoined: boolean; events: ChatEvent[] } {
     if (input.token) {
       const existing = this.getParticipantByToken(input.token)
       if (existing && existing.room_id === roomId) {
+        if (input.nickname && input.nickname !== existing.nickname) {
+          assertValidNickname(input.nickname)
+          const conflict = this.db
+            .prepare('SELECT 1 FROM participants WHERE room_id = ? AND nickname = ? AND uid != ?')
+            .get(roomId, input.nickname, existing.uid)
+          if (conflict) throw new ConflictError(`nickname "${input.nickname}" is taken in this room`)
+          const oldNickname = existing.nickname
+          const updated = { ...existing, nickname: input.nickname }
+          let events: ChatEvent[] = []
+          this.db.transaction(() => {
+            this.db.prepare('UPDATE participants SET nickname = ? WHERE uid = ?').run(input.nickname, existing.uid)
+            events = this.appendEvent(roomId, {
+              kind: 'nickname_changed',
+              sender_uid: existing.uid,
+              text: `${oldNickname} is now ${input.nickname}`,
+              payload: { uid: existing.uid, old_nickname: oldNickname, new_nickname: input.nickname },
+            })
+          })()
+          return { participant: updated, rejoined: true, events }
+        }
         return { participant: existing, rejoined: true, events: [] }
       }
     }
     assertValidNickname(input.nickname)
-    const conflict = this.db
-      .prepare('SELECT 1 FROM participants WHERE room_id = ? AND nickname = ?')
-      .get(roomId, input.nickname)
-    if (conflict) throw new ConflictError(`nickname "${input.nickname}" is taken in this room`)
+    const existing = this.db
+      .prepare('SELECT * FROM participants WHERE room_id = ? AND nickname = ?')
+      .get(roomId, input.nickname) as Participant | undefined
+    if (existing) {
+      if (input.reclaim) {
+        const newToken = randomBytes(24).toString('base64url')
+        this.db.prepare('UPDATE participants SET token = ? WHERE uid = ?').run(newToken, existing.uid)
+        return { participant: { ...existing, token: newToken }, rejoined: true, events: [] }
+      }
+      throw new ConflictError(`nickname "${input.nickname}" is taken in this room`)
+    }
 
     const participant: Participant = {
       uid: ulid(),

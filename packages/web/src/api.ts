@@ -23,7 +23,7 @@ export interface ChatEvent {
   seq: number
   msg_id: string
   sender_uid: string | null
-  kind: 'message' | 'member_joined' | 'member_left' | 'system' | 'room_updated' | 'room_deleted'
+  kind: 'message' | 'member_joined' | 'member_left' | 'system' | 'room_updated' | 'room_deleted' | 'nickname_changed'
   text: string | null
   in_reply_to: string | null
   mentions: string[]

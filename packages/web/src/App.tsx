@@ -203,7 +203,7 @@ function ChatView({
       setEvents((prev) => (prev.some((p) => p.seq === ev.seq) ? prev : [...prev, ev]))
       if (ev.kind === 'room_updated') onRoomChanged()
       if (ev.kind === 'room_deleted') { onRoomChanged(); location.hash = ''; return }
-      if (ev.kind === 'member_joined' || ev.kind === 'member_left') refreshMembers()
+      if (ev.kind === 'member_joined' || ev.kind === 'member_left' || ev.kind === 'nickname_changed') refreshMembers()
     })
     return () => es.close()
   }, [roomId, identity.token, onRoomChanged, refreshMembers])

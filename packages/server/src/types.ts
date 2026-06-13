@@ -1,6 +1,6 @@
 export type ParticipantType = 'human' | 'agent'
 
-export type EventKind = 'message' | 'member_joined' | 'member_left' | 'system' | 'room_updated' | 'room_deleted'
+export type EventKind = 'message' | 'member_joined' | 'member_left' | 'system' | 'room_updated' | 'room_deleted' | 'nickname_changed'
 
 export interface Room {
   id: string
