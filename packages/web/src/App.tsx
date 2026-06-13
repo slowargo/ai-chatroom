@@ -449,61 +449,66 @@ function PendingApprovalPanel({
   return (
     <div className="pending-panel">
       <h4>待审批加入请求</h4>
-      {requests.map((req) => (
-        <div key={req.request_id} className="pending-item">
-          <div className="pending-info">
-            <span className="nick agent">{req.nickname_requested}</span>
-            {req.persona_name && <span className="badge">{req.persona_name}</span>}
-            <time>{new Date(req.created_at).toLocaleTimeString()}</time>
-          </div>
-          <div className="pending-actions">
-            <label>新成员</label>
-            <input
-              value={nickFor(req)}
-              onChange={(e) =>
-                setNicknames((prev) => ({ ...prev, [req.request_id]: e.target.value }))
-              }
-              size={12}
-            />
-            <button onClick={() => approveNew(req)}>批准（新）</button>
-          </div>
-          {agentMembers.length > 0 && (
+      {requests.map((req) => {
+        const hasExisting = members.some((m) => m.nickname === req.nickname_requested)
+        return (
+          <div key={req.request_id} className="pending-item">
+            <div className="pending-info">
+              <span className="nick agent">{req.nickname_requested}</span>
+              {req.persona_name && <span className="badge">{req.persona_name}</span>}
+              <time>{new Date(req.created_at).toLocaleTimeString()}</time>
+            </div>
+            {!hasExisting && (
+              <div className="pending-actions">
+                <label>新成员</label>
+                <input
+                  value={nickFor(req)}
+                  onChange={(e) =>
+                    setNicknames((prev) => ({ ...prev, [req.request_id]: e.target.value }))
+                  }
+                  size={12}
+                />
+                <button onClick={() => approveNew(req)}>批准（新）</button>
+              </div>
+            )}
+            {agentMembers.length > 0 && (
+              <div className="pending-actions">
+                <label>绑定既有</label>
+                <select
+                  value={bindFor(req)}
+                  onChange={(e) =>
+                    setBindUids((prev) => ({ ...prev, [req.request_id]: e.target.value }))
+                  }
+                >
+                  <option value="">-- 选择成员 --</option>
+                  {agentMembers.map((m) => (
+                    <option key={m.uid} value={m.uid}>
+                      {m.nickname}
+                    </option>
+                  ))}
+                </select>
+                <button disabled={!bindFor(req)} onClick={() => approveBind(req)}>
+                  批准（绑定）
+                </button>
+              </div>
+            )}
             <div className="pending-actions">
-              <label>绑定既有</label>
-              <select
-                value={bindFor(req)}
+              <input
+                placeholder="拒绝原因（可选）"
+                value={reasons[req.request_id] ?? ''}
                 onChange={(e) =>
-                  setBindUids((prev) => ({ ...prev, [req.request_id]: e.target.value }))
+                  setReasons((prev) => ({ ...prev, [req.request_id]: e.target.value }))
                 }
-              >
-                <option value="">-- 选择成员 --</option>
-                {agentMembers.map((m) => (
-                  <option key={m.uid} value={m.uid}>
-                    {m.nickname}
-                  </option>
-                ))}
-              </select>
-              <button disabled={!bindFor(req)} onClick={() => approveBind(req)}>
-                批准（绑定）
+                size={16}
+              />
+              <button className="reject" onClick={() => reject(req)}>
+                拒绝
               </button>
             </div>
-          )}
-          <div className="pending-actions">
-            <input
-              placeholder="拒绝原因（可选）"
-              value={reasons[req.request_id] ?? ''}
-              onChange={(e) =>
-                setReasons((prev) => ({ ...prev, [req.request_id]: e.target.value }))
-              }
-              size={16}
-            />
-            <button className="reject" onClick={() => reject(req)}>
-              拒绝
-            </button>
+            {errors[req.request_id] && <p className="error">{errors[req.request_id]}</p>}
           </div>
-          {errors[req.request_id] && <p className="error">{errors[req.request_id]}</p>}
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
