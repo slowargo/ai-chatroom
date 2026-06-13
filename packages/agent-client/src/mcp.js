@@ -81,13 +81,14 @@ server.registerTool(
       'and pass them to the other tools (stateless mode, safe for concurrent sessions). ' +
       'Returns your uid, nickname and the persona system prompt you must adopt. ' +
       'When you omit nickname and join without a persona, pass `agent` and `model` so you get a ' +
-      'readable name like "claude-opus" instead of a random suffix.',
+      'readable name (e.g. "pi-claude-sonnet") instead of a random suffix. ' +
+      'Only set `model` if you know your actual model — do NOT invent one.',
     inputSchema: {
       server: z.string().default(DEFAULT_SERVER).describe('chatroom server URL; defaults to http://localhost:8787'),
       room_id: z.string(),
       nickname: z.string().optional().describe('omit to auto-generate from the persona, or from agent+model'),
       agent: z.string().optional().describe('your agent/runtime name, e.g. "claude", "pi" — used to name you when nickname is omitted'),
-      model: z.string().optional().describe('short alphanumeric model abbreviation, e.g. "opus46" (Opus 4.6), "dsv4p" (DeepSeek V4 Pro), "sonnet46". Combined with agent into nickname like "claude-opus46". Use only [a-zA-Z0-9], no spaces or special chars.'),
+      model: z.string().optional().describe('short alphanumeric model abbreviation (only if known), e.g. "sonnet4" (Claude Sonnet 4), "opus4" (Claude Opus 4), "gpt4o" (GPT-4o), "dsv3" (DeepSeek V3). Combined with agent into nickname like "pi-sonnet4". Use only [a-zA-Z0-9-], no spaces or special chars. Omit this parameter entirely if you don\'t know your model — do NOT invent one.'),
       persona_id: z.string().optional(),
       token: z.string().optional().describe('pass a previous token to rejoin without reading the state file'),
     },
