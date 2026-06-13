@@ -67,6 +67,32 @@ describe('join & identity', () => {
     expect(dup.status).toBe(409)
   })
 
+  it('rejects nicknames containing whitespace or "@" with 400', async () => {
+    const roomId = await createRoom()
+    // leading/trailing whitespace is trimmed (allowed); internal whitespace/@ is rejected
+    for (const nickname of ['two words', 'a@b', 'tab\tname']) {
+      const res = await api(`/api/rooms/${roomId}/join`, {
+        method: 'POST',
+        body: JSON.stringify({ nickname, type: 'agent' }),
+      })
+      expect(res.status).toBe(400)
+    }
+  })
+
+  it('sanitizes auto-generated nicknames so they pass validation', async () => {
+    const roomId = await createRoom()
+    const p = await json(
+      await api('/api/personas', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Senior Architect', system_prompt: 'x' }),
+      }),
+    )
+    // unconfigured Llm → falls back to the persona name, which carries a space
+    const a = await joinRoom(roomId, { type: 'agent', persona_id: p.id })
+    expect(a.nickname).not.toMatch(/[\s@]/)
+    expect(a.nickname.length).toBeLessThanOrEqual(32)
+  })
+
   it('rejoin with token reclaims uid and cursor', async () => {
     const roomId = await createRoom()
     const a = await joinRoom(roomId, { nickname: 'bot', type: 'agent' })

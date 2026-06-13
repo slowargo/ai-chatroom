@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises'
 import { extname, join, normalize } from 'node:path'
 import type { Hub } from './hub.js'
 import type { Llm } from './llm.js'
-import { ConflictError, type Store } from './store.js'
+import { ConflictError, ValidationError, type Store } from './store.js'
 import type { ChatEvent, Participant, ParticipantType } from './types.js'
 
 export interface AppDeps {
@@ -77,6 +77,7 @@ export function createApp(deps: AppDeps) {
   })
 
   app.onError((err, c) => {
+    if (err instanceof ValidationError) return c.json({ error: err.message }, 400)
     if (err instanceof ConflictError) return c.json({ error: err.message }, 409)
     console.error(err)
     return c.json({ error: 'internal error' }, 500)
@@ -121,7 +122,14 @@ export function createApp(deps: AppDeps) {
       const generated = persona ? await llm.genNickname(persona.name, persona.system_prompt, taken) : null
       // caller-supplied hint (e.g. "claude-opus" from an agent's agent+model) beats a random suffix
       const hint = body.nickname_hint?.trim().replace(/[@\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 20)
-      base = generated || hint || `${persona?.name ?? type}-${Math.random().toString(36).slice(2, 6)}`
+      // LLM output / persona names may carry spaces; sanitize so the auto path always
+      // satisfies assertValidNickname (no whitespace/@, non-empty). 24-char cap leaves
+      // headroom for the `-suffix` below to stay within the nickname length limit.
+      base =
+        (generated || hint || `${persona?.name ?? type}-${Math.random().toString(36).slice(2, 6)}`)
+          .replace(/[@\s]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 24) || type
       nickname = taken.includes(base) ? `${base}-${Math.random().toString(36).slice(2, 6)}` : base
     }
 

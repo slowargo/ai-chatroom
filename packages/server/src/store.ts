@@ -12,6 +12,18 @@ import type {
 } from './types.js'
 
 export class ConflictError extends Error {}
+export class ValidationError extends Error {}
+
+const NICKNAME_MAX = 32
+// Nicknames must be whitespace- and @-free so `@mention` boundaries are unambiguous
+// (the parser delimits mentions by whitespace / the @ that starts the next one).
+// CJK and other letters are allowed on purpose — only the structural chars are banned.
+export function assertValidNickname(nickname: string): void {
+  if (!nickname) throw new ValidationError('nickname is required')
+  if (nickname.length > NICKNAME_MAX)
+    throw new ValidationError(`nickname must be at most ${NICKNAME_MAX} characters`)
+  if (/[\s@]/u.test(nickname)) throw new ValidationError('nickname must not contain whitespace or "@"')
+}
 
 export interface StoreOptions {
   /** mute agent-to-agent mentions after this many consecutive agent messages (no human in between) */
@@ -128,6 +140,7 @@ export class Store {
         return { participant: existing, rejoined: true, events: [] }
       }
     }
+    assertValidNickname(input.nickname)
     const conflict = this.db
       .prepare('SELECT 1 FROM participants WHERE room_id = ? AND nickname = ?')
       .get(roomId, input.nickname)

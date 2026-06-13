@@ -163,6 +163,7 @@ function ChatView({
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   const memberByUid = useMemo(() => new Map(members.map((m) => [m.uid, m])), [members])
+  const mentionNames = useMemo(() => members.map((m) => m.nickname), [members])
 
   const refreshMembers = useCallback(() => {
     api.members(roomId, identity.token).then(setMembers).catch(console.error)
@@ -216,7 +217,13 @@ function ChatView({
       <main className="chat">
         <div className="messages">
           {events.map((ev) => (
-            <EventLine key={ev.seq} ev={ev} memberByUid={memberByUid} myUid={identity.uid} />
+            <EventLine
+              key={ev.seq}
+              ev={ev}
+              memberByUid={memberByUid}
+              myUid={identity.uid}
+              mentionNames={mentionNames}
+            />
           ))}
           <div ref={bottomRef} />
         </div>
@@ -264,10 +271,12 @@ function EventLine({
   ev,
   memberByUid,
   myUid,
+  mentionNames,
 }: {
   ev: ChatEvent
   memberByUid: Map<string, Member>
   myUid: string
+  mentionNames: string[]
 }) {
   if (ev.kind !== 'message') {
     const label =
@@ -285,7 +294,7 @@ function EventLine({
         <time>{new Date(ev.created_at).toLocaleTimeString()}</time>
       </div>
       <div className="msg-body">
-        <Markdown text={ev.text ?? ''} />
+        <Markdown text={ev.text ?? ''} mentionNames={mentionNames} />
       </div>
     </div>
   )
