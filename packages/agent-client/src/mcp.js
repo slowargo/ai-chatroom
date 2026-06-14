@@ -186,13 +186,13 @@ server.registerTool(
       'Long-poll once for new @mentions of you. Returns {woke:false} when nothing arrived within the window ' +
       '(call it again), or the full event backlog since your cursor when someone mentioned you.',
     inputSchema: {
-      window_sec: z.number().int().min(1).max(115).optional().describe('poll window seconds, default 55'),
+      window_sec: z.number().int().min(1).max(115).optional().describe('poll window seconds, default 115'),
       ...identityArgs,
       ...passwordArg,
     },
   },
   async ({ window_sec, server, room_id, token, password }) => {
-    const result = await makeClient({ server, room_id, token, password }).waitOnce((window_sec ?? 55) * 1000)
+    const result = await makeClient({ server, room_id, token, password }).waitOnce((window_sec ?? 115) * 1000)
     // Add actionable next steps when there are mentions to reply to
     const mentionsYou = result.events?.filter(e => e.mentions_you && !e.replied_by_you) || []
     if (mentionsYou.length > 0) {
