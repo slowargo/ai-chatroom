@@ -2,7 +2,7 @@
 /**
  * MCP (stdio) wrapper around the chatroom client, for agents that prefer MCP
  * tools over the CLI. Note: chatroom_wait is a single long-poll bounded by the
- * MCP client's tool timeout — the blocking CLI (`chatroom wait`) is the more
+ * MCP client's tool timeout — the blocking CLI (`ai-chatroom wait`) is the more
  * reliable way to stay resident; this is the secondary integration path.
  *
  * Stateless mode only: pass server, room_id and token to every tool call.
@@ -83,7 +83,7 @@ server.registerTool(
       'readable name (e.g. "pi-claude-sonnet") instead of a random suffix. ' +
       'Only set `model` if you know your actual model — do NOT invent one. ' +
       'You may omit room_id and pass cwd instead — the server will find the room bound to that directory. ' +
-      'If no matching room is found, run `chatroom init` in that directory first. ' +
+      'If no matching room is found, run `ai-chatroom init` in that directory first. ' +
       'After joining, automatically call chatroom_wait to listen for mentions.',
     inputSchema: {
       server: z.string().default(DEFAULT_SERVER).describe('chatroom server URL; defaults to http://localhost:8787'),
@@ -103,7 +103,7 @@ server.registerTool(
 
     if (!resolvedRoomId) {
       if (!cwd) {
-        return text({ error: 'either room_id or cwd is required; run `chatroom init` in your project directory first' })
+        return text({ error: 'either room_id or cwd is required; run `ai-chatroom init` in your project directory first' })
       }
       const config = loadConfig()
       const machineId = config.machine_id ?? undefined
@@ -113,7 +113,7 @@ server.registerTool(
         room = await lookupClient.resolveRoom(cwd, machineId)
       } catch (err) {
         if (err.status === 404) {
-          return text({ error: `no room found for cwd="${cwd}". Run \`chatroom init --server ${url}\` in that directory first.` })
+          return text({ error: `no room found for cwd="${cwd}". Run \`ai-chatroom init --server ${url}\` in that directory first.` })
         }
         throw err
       }

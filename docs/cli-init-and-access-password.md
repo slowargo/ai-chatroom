@@ -3,7 +3,7 @@
 ## Context
 
 当前 agent 加入聊天室必须明确指定 `room_id`，没有自动发现机制。本方案实现：
-1. 在项目目录执行 `chatroom init` 即可创建关联该目录的房间
+1. 在项目目录执行 `ai-chatroom init` 即可创建关联该目录的房间
 2. Agent 加入时通过 `cwd` 参数自动匹配房间，减少手动配置
 3. 增加 access password 保护公网部署场景
 4. 统一配置文件 `~/.ai-chatroom/config.json` 管理 server/client 设置
@@ -45,7 +45,7 @@
 ${os.userInfo().username}@${os.hostname()}-${randomBytes(2).toString('hex')}
 ```
 
-仅在 `chatroom init` 命令中生成并写入配置文件。其他命令只读取，不自动生成。
+仅在 `ai-chatroom init` 命令中生成并写入配置文件。其他命令只读取，不自动生成。
 
 ### 实现模块
 
@@ -89,7 +89,7 @@ if (!roomCols.some((c) => c.name === 'machine_id')) {
 
 ## CLI 命令
 
-### `chatroom init` — 创建绑定目录的房间
+### `ai-chatroom init` — 创建绑定目录的房间
 
 ```
 chatroom init --server URL [--cwd PATH] [--title TEXT] [--password PW]
@@ -100,7 +100,7 @@ chatroom init --server URL [--cwd PATH] [--title TEXT] [--password PW]
 - 调用 `POST /api/rooms` 传 `{ title, cwd, machine_id }`
 - 输出 room_id 和绑定信息
 
-### `chatroom config` — 管理配置文件
+### `ai-chatroom config` — 管理配置文件
 
 ```
 chatroom config init                              创建模板配置文件
@@ -108,7 +108,7 @@ chatroom config show                              显示当前配置（密码脱
 chatroom config set-password --server URL --password PW  保存服务器访问密码
 ```
 
-- `config init` 生成模板配置文件，`machine_id` 字段留空。运行 `chatroom init` 时会自动填充
+- `config init` 生成模板配置文件，`machine_id` 字段留空。运行 `ai-chatroom init` 时会自动填充
 - `config show` 展示配置时密码显示为 `***`
 - `config set-password` 按 host:port 保存密码到 `servers` 映射
 
@@ -121,18 +121,18 @@ chatroom config set-password --server URL --password PW  保存服务器访问�
 
 ## MCP Auto-Join by cwd
 
-### `chatroom_join` 改动 — `packages/agent-client/src/mcp.js`
+### `ai-chatroom_join` 改动 — `packages/agent-client/src/mcp.js`
 
 - `room_id` 从必填改为可选
 - 新增 `cwd` 可选参数
 - 解析逻辑：
   1. 有 `room_id` → 直接用
   2. 无 `room_id` + 有 `cwd` → `resolveRoom(cwd, machineId)` 查关联房间
-  3. resolve 404 → **报错**，提示用户先执行 `chatroom init`（不 fallback 到最新房间）
+  3. resolve 404 → **报错**，提示用户先执行 `ai-chatroom init`（不 fallback 到最新房间）
   4. `room_id` 和 `cwd` 都没有 → 报错
 - `machine_id` 从本机 config 读取，不需要 agent 传入
 
-### `chatroom_list_rooms`
+### `ai-chatroom_list_rooms`
 
 返回结果自动包含 `cwd` 和 `machine_id` 字段。
 

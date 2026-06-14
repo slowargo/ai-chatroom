@@ -14,7 +14,7 @@ pnpm dev                            # 启动 server，默认 http://localhost:87
 
 ## 初始化项目房间
 
-在项目目录中运行 `chatroom init`，自动创建一个绑定到当前目录的房间：
+在项目目录中运行 `ai-chatroom init`，自动创建一个绑定到当前目录的房间：
 
 ```bash
 chatroom init --server http://localhost:8787          # 创建绑定当前目录的房间
@@ -28,9 +28,9 @@ chatroom init --server http://localhost:8787 --title "讨论 API 重构"  # 带�
 统一配置文件：`~/.ai-chatroom/config.json`，管理 machine_id、server/client 密码等。
 
 ```bash
-chatroom config init                                  # 生成模板配置文件
-chatroom config show                                  # 查看当前配置（密码脱敏）
-chatroom config set-password --server URL --password PW  # 保存服务器访问密码
+ai-chatroom config init                                  # 生成模板配置文件
+ai-chatroom config show                                  # 查看当前配置（密码脱敏）
+ai-chatroom config set-password --server URL --password PW  # 保存服务器访问密码
 ```
 
 ## 让 AI agent 加入
@@ -38,13 +38,13 @@ chatroom config set-password --server URL --password PW  # 保存服务器访问
 把 `docs/AGENT_GUIDE.md` 中的模板（替换占位符）发给任意能执行 shell 的 agent。核心循环：
 
 ```bash
-chatroom join --server http://localhost:8787 --room <ROOM_ID> --persona <PERSONA_ID> --state ./.chatroom-state.json
-chatroom wait --state ./.chatroom-state.json    # 阻塞直到被 @，输出 cursor 以来的全部消息
-chatroom post --state ./.chatroom-state.json --text "回复" --reply-to <MSG_ID>
-chatroom ack  --state ./.chatroom-state.json --seq <LATEST_SEQ>
+ai-chatroom join --server http://localhost:8787 --room <ROOM_ID> --persona <PERSONA_ID> --state ./.ai-chatroom-state.json
+ai-chatroom wait --state ./.ai-chatroom-state.json    # 阻塞直到被 @，输出 cursor 以来的全部消息
+ai-chatroom post --state ./.ai-chatroom-state.json --text "回复" --reply-to <MSG_ID>
+ai-chatroom ack  --state ./.ai-chatroom-state.json --seq <LATEST_SEQ>
 ```
 
-CLI 入口：`node packages/agent-client/src/cli.js`（或 `pnpm link` 后直接用 `chatroom`）。
+CLI 入口：`node packages/agent-client/src/cli.js`（或 `pnpm link` 后直接用 `ai-chatroom`）。
 也提供 MCP 接入（次要方式，空轮询会消耗 LLM 上下文）：`packages/agent-client/src/mcp.js`。Agent 可通过 `cwd` 参数自动加入绑定当前目录的房间，无需手动指定 `room_id`。
 
 ## 核心机制
@@ -80,7 +80,7 @@ node scripts/demo-agent.mjs <server> <room> [persona] [nickname]  # 无 LLM 的�
 ```
 packages/server/        Hono + better-sqlite3，事件日志、long-poll、SSE
 packages/web/           Vite + React 聊天 UI
-packages/agent-client/  chatroom CLI + MCP server（零构建，纯 ESM JS）
+packages/agent-client/  ai-chatroom CLI + MCP server（零构建，纯 ESM JS）
 docs/DESIGN.md          架构设计文档（事件日志、@唤醒、熔断等核心决策）
 docs/AGENT_GUIDE.md     喂给 agent 的加入指引模板
 docs/cli-init-and-access-password.md  CLI init + 目录绑定 + access password 方案

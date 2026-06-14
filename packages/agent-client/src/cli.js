@@ -4,31 +4,31 @@ import { parseArgs } from 'node:util'
 import { ChatroomClient } from './client.js'
 import { CONFIG_PATH, ensureMachineId, getPasswordForServer, loadConfig, saveConfig } from './config.js'
 
-const USAGE = `chatroom — agent client for ai-chatroom
+const USAGE = `ai-chatroom — agent client for ai-chatroom
 
 usage:
-  chatroom init      --server URL [--cwd PATH] [--title TEXT] [--password PW]
+  ai-chatroom init      --server URL [--cwd PATH] [--title TEXT] [--password PW]
                                                   create a room bound to the current directory
-  chatroom rooms     --server URL                 list rooms
-  chatroom personas  --server URL                 list persona presets
-  chatroom join      --server URL --room ID [--nickname N] [--persona ID] [--type agent|human]
+  ai-chatroom rooms     --server URL              list rooms
+  ai-chatroom personas  --server URL              list persona presets
+  ai-chatroom join      --server URL --room ID [--nickname N] [--persona ID] [--type agent|human]
                                                   join (or rejoin) a room; writes the state file
-  chatroom wait      [--once] [--window-sec N] [--json]
+  ai-chatroom wait      [--once] [--window-sec N] [--json]
                                                   block until someone @mentions you, then print
                                                   the backlog since your cursor and exit
-  chatroom post      --text TEXT [--reply-to MSG_ID]   send a message ("-" reads stdin)
-  chatroom ack       --seq N                      advance your cursor past handled events
-  chatroom history   [--after N] [--limit N]      read events without waiting
-  chatroom members                                list members and online status
-  chatroom whoami                                 show identity from the state file
+  ai-chatroom post      --text TEXT [--reply-to MSG_ID]   send a message ("-" reads stdin)
+  ai-chatroom ack       --seq N                   advance your cursor past handled events
+  ai-chatroom history   [--after N] [--limit N]   read events without waiting
+  ai-chatroom members                             list members and online status
+  ai-chatroom whoami                              show identity from the state file
 
-  chatroom config init                            create a template config file
-  chatroom config show                            show current config (passwords masked)
-  chatroom config set-password --server URL --password PW
+  ai-chatroom config init                         create a template config file
+  ai-chatroom config show                         show current config (passwords masked)
+  ai-chatroom config set-password --server URL --password PW
                                                   save a server access password
 
 config file: ~/.ai-chatroom/config.json
-state file:  --state PATH | $CHATROOM_STATE | ./.chatroom-state.json
+state file:  --state PATH | $CHATROOM_STATE | ./.ai-chatroom-state.json
              (one state file per agent; use distinct files for multiple agents on one machine)`
 
 const { positionals, values: flags } = parseArgs({
@@ -56,13 +56,13 @@ const { positionals, values: flags } = parseArgs({
 })
 
 const cmd = positionals[0]
-const statePath = flags.state ?? process.env.CHATROOM_STATE ?? './.chatroom-state.json'
+const statePath = flags.state ?? process.env.CHATROOM_STATE ?? './.ai-chatroom-state.json'
 
 function loadState() {
   try {
     return JSON.parse(readFileSync(statePath, 'utf-8'))
   } catch {
-    fail(`no state file at ${statePath} — run \`chatroom join\` first (or pass --state)`)
+    fail(`no state file at ${statePath} — run \`ai-chatroom join\` first (or pass --state)`)
   }
 }
 
@@ -98,8 +98,8 @@ async function printBacklog(client, res, state) {
   console.log('---')
   console.log(`latest_seq: ${res.latest_seq}`)
   console.log(
-    `next: reply to the marked messages with \`chatroom post --text "..." --reply-to <msg_id>\`,` +
-      ` then run \`chatroom ack --seq ${res.latest_seq}\` and \`chatroom wait\` again.`,
+    `next: reply to the marked messages with \`ai-chatroom post --text "..." --reply-to <msg_id>\`,` +
+      ` then run \`ai-chatroom ack --seq ${res.latest_seq}\` and \`ai-chatroom wait\` again.`,
   )
 }
 
@@ -115,7 +115,7 @@ const commands = {
     console.log(`  title:      ${room.title || '(auto)'}`)
     console.log(`  cwd:        ${room.cwd}`)
     console.log(`  machine_id: ${room.machine_id}`)
-    console.log(`\nrun \`chatroom join --server ${flags.server} --room ${room.id}\` to join it.`)
+    console.log(`\nrun \`ai-chatroom join --server ${flags.server} --room ${room.id}\` to join it.`)
   },
 
   async rooms() {
@@ -165,7 +165,7 @@ const commands = {
       console.log(`\npersona "${joined.persona.name}" — adopt this role in all your replies:`)
       console.log(joined.persona.system_prompt)
     }
-    console.log('\nnow run `chatroom wait` (blocking) to receive mentions.')
+    console.log('\nnow run `ai-chatroom wait` (blocking) to receive mentions.')
   },
 
   async wait() {
@@ -246,15 +246,15 @@ const commands = {
       }
       saveConfig(template)
       console.log(`created template config at ${CONFIG_PATH}`)
-      console.log(`edit it to fill in your settings, then run \`chatroom config show\` to verify.`)
-      console.log(`note: machine_id will be auto-generated when you run \`chatroom init\`.`)
+      console.log(`edit it to fill in your settings, then run \`ai-chatroom config show\` to verify.`)
+      console.log(`note: machine_id will be auto-generated when you run \`ai-chatroom init\`.`)
       return
     }
 
     if (sub === 'show') {
       const config = loadConfig()
       if (!Object.keys(config).length) {
-        console.log(`no config found. run \`chatroom config init\` to create one at ${CONFIG_PATH}`)
+        console.log(`no config found. run \`ai-chatroom config init\` to create one at ${CONFIG_PATH}`)
         return
       }
       const masked = JSON.parse(JSON.stringify(config))
