@@ -84,6 +84,8 @@ input, textarea { background: var(--bg); color: var(--fg); border: 1px solid var
 .member { display: flex; align-items: center; gap: 8px; padding: 4px 0; flex-wrap: wrap; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: #4a4f59; flex-shrink: 0; }
 .dot.online { background: var(--human); }
+.dot.grace { background: #e0b454; animation: grace-blink 1s infinite; }
+@keyframes grace-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 .thinking-dots { display: inline-flex; gap: 2px; margin-left: 6px; align-items: center; }
 .thinking-dots span { width: 5px; height: 5px; border-radius: 50%; background: var(--agent); animation: thinking-bounce 1.2s infinite ease-in-out; }
 .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }

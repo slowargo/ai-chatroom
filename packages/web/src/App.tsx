@@ -183,6 +183,9 @@ function ChatView({
   const [error, setError] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const offlineTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const prevOnlineRef = useRef<Map<string, boolean>>(new Map())
+  const [graceUids, setGraceUids] = useState<Set<string>>(new Set())
 
   const memberByUid = useMemo(() => new Map(members.map((m) => [m.uid, m])), [members])
   const mentionNames = useMemo(() => members.map((m) => m.nickname), [members])
@@ -194,9 +197,32 @@ function ChatView({
 
   useEffect(() => {
     refreshMembers()
-    const timer = setInterval(refreshMembers, 10_000) // presence has no event; poll it
+    const timer = setInterval(refreshMembers, 2_000) // presence has no event; poll it
     return () => clearInterval(timer)
   }, [refreshMembers])
+
+  useEffect(() => {
+    const prev = prevOnlineRef.current
+    for (const m of members) {
+      const wasOnline = prev.get(m.uid) ?? false
+      if (wasOnline && !m.online && !offlineTimers.current.has(m.uid)) {
+        setGraceUids(s => new Set(s).add(m.uid))
+        offlineTimers.current.set(m.uid, setTimeout(() => {
+          offlineTimers.current.delete(m.uid)
+          setGraceUids(s => { const n = new Set(s); n.delete(m.uid); return n })
+        }, 10_000))
+      } else if (m.online && offlineTimers.current.has(m.uid)) {
+        clearTimeout(offlineTimers.current.get(m.uid)!)
+        offlineTimers.current.delete(m.uid)
+        setGraceUids(s => { const n = new Set(s); n.delete(m.uid); return n })
+      }
+      prev.set(m.uid, m.online)
+    }
+  }, [members])
+
+  useEffect(() => {
+    return () => { for (const t of offlineTimers.current.values()) clearTimeout(t) }
+  }, [])
 
   // Poll pending joins every 5s (human/admin users only)
   const refreshPendingJoins = useCallback(() => {
@@ -330,7 +356,7 @@ function ChatView({
         <h3>成员</h3>
         {members.map((m) => (
           <div key={m.uid} className="member">
-            <span className={`dot ${m.online ? 'online' : ''}`} />
+            <span className={`dot ${m.online ? 'online' : graceUids.has(m.uid) ? 'grace' : ''}`} />
             <span className={`nick ${m.type}`}>{m.nickname}</span>
             {m.thinking && <span className="thinking-dots"><span /><span /><span /></span>}
             {m.persona_name && <span className="badge">{m.persona_name}</span>}
