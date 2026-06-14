@@ -53,7 +53,7 @@ const BARE_URL = /^https?:\/\/\S+$/i
 function fallbackTitle(messages: Array<{ text: string }>): string {
   const pick = messages.find((m) => m.text && !BARE_URL.test(m.text.trim())) ?? messages[0]
   const t = pick?.text?.trim() ?? ''
-  return t.length > 24 ? `${t.slice(0, 24)}…` : t
+  return t.length > 40 ? `${t.slice(0, 40)}…` : t
 }
 
 export function createApp(deps: AppDeps) {

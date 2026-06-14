@@ -126,9 +126,13 @@ export class Llm {
   }
 
   async genTitle(messages: Array<{ nickname: string; text: string }>): Promise<string | null> {
-    const transcript = messages.map((m) => `${m.nickname}: ${m.text}`).join('\n')
+    const truncate = (s: string, n: number) => {
+      const chars = [...s]
+      return chars.length > n ? chars.slice(0, n).join('') : s
+    }
+    const transcript = messages.map((m) => `${m.nickname}: ${truncate(m.text, 400)}`).join('\n')
     const title = await this.chat(
-      'Generate a concise topic title (max 20 characters, same language as the conversation). Reply with the title only — no quotes, no punctuation around it.',
+      'You are naming a chatroom topic.\nGenerate a descriptive topic title (max 40 characters, same language as the conversation) that captures the specific subject being discussed.\nKeep concrete nouns and key terms — prefer "关于PR#123的代码审查" over "审查计划与代码", "PR #123 code review" over "Review and planning".\nFocus on the topic or task, not the participants. Reply with the title only — no quotes, no punctuation around it.',
       transcript,
     )
     return title ? title.split('\n')[0].slice(0, 40) : null
