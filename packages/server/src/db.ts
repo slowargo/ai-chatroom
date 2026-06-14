@@ -57,5 +57,12 @@ export function openDb(path: string): Database.Database {
   if (!roomCols.some((c) => c.name === 'title_auto')) {
     db.exec("ALTER TABLE rooms ADD COLUMN title_auto INTEGER NOT NULL DEFAULT 1")
   }
+  if (!roomCols.some((c) => c.name === 'cwd')) {
+    db.exec("ALTER TABLE rooms ADD COLUMN cwd TEXT DEFAULT NULL")
+  }
+  if (!roomCols.some((c) => c.name === 'machine_id')) {
+    db.exec("ALTER TABLE rooms ADD COLUMN machine_id TEXT DEFAULT NULL")
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_rooms_cwd ON rooms(cwd)")
   return db
 }

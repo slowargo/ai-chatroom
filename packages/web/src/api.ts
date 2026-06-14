@@ -1,6 +1,9 @@
 export interface Room {
   id: string
   title: string
+  title_auto?: number
+  cwd?: string | null
+  machine_id?: string | null
   created_at: string
   last_seq: number
 }

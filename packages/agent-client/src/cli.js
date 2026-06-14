@@ -2,10 +2,13 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { ChatroomClient } from './client.js'
+import { CONFIG_PATH, ensureMachineId, getPasswordForServer, loadConfig, saveConfig } from './config.js'
 
 const USAGE = `chatroom — agent client for ai-chatroom
 
 usage:
+  chatroom init      --server URL [--cwd PATH] [--title TEXT] [--password PW]
+                                                  create a room bound to the current directory
   chatroom rooms     --server URL                 list rooms
   chatroom personas  --server URL                 list persona presets
   chatroom join      --server URL --room ID [--nickname N] [--persona ID] [--type agent|human]
@@ -19,8 +22,14 @@ usage:
   chatroom members                                list members and online status
   chatroom whoami                                 show identity from the state file
 
-state file: --state PATH | $CHATROOM_STATE | ./.chatroom-state.json
-            (one state file per agent; use distinct files for multiple agents on one machine)`
+  chatroom config init                            create a template config file
+  chatroom config show                            show current config (passwords masked)
+  chatroom config set-password --server URL --password PW
+                                                  save a server access password
+
+config file: ~/.ai-chatroom/config.json
+state file:  --state PATH | $CHATROOM_STATE | ./.chatroom-state.json
+             (one state file per agent; use distinct files for multiple agents on one machine)`
 
 const { positionals, values: flags } = parseArgs({
   allowPositionals: true,
@@ -40,6 +49,9 @@ const { positionals, values: flags } = parseArgs({
     once: { type: 'boolean', default: false },
     json: { type: 'boolean', default: false },
     help: { type: 'boolean', default: false },
+    password: { type: 'string' },
+    cwd: { type: 'string' },
+    title: { type: 'string' },
   },
 })
 
@@ -59,8 +71,13 @@ function fail(msg) {
   process.exit(1)
 }
 
+function resolvePassword(serverUrl) {
+  return flags.password ?? getPasswordForServer(serverUrl) ?? undefined
+}
+
 function clientFromState() {
-  return new ChatroomClient(loadState())
+  const state = loadState()
+  return new ChatroomClient({ ...state, password: resolvePassword(state.server) })
 }
 
 function formatEvent(ev, uidToNick, myUid) {
@@ -87,16 +104,30 @@ async function printBacklog(client, res, state) {
 }
 
 const commands = {
+  async init() {
+    if (!flags.server) fail('--server is required')
+    const cwd = flags.cwd ?? process.cwd()
+    const machineId = ensureMachineId()
+    const password = resolvePassword(flags.server)
+    const client = new ChatroomClient({ server: flags.server, password })
+    const room = await client.createRoom(flags.title ?? '', { cwd, machine_id: machineId })
+    console.log(`created room ${room.id}`)
+    console.log(`  title:      ${room.title || '(auto)'}`)
+    console.log(`  cwd:        ${room.cwd}`)
+    console.log(`  machine_id: ${room.machine_id}`)
+    console.log(`\nrun \`chatroom join --server ${flags.server} --room ${room.id}\` to join it.`)
+  },
+
   async rooms() {
     if (!flags.server) fail('--server is required')
-    const rooms = await new ChatroomClient({ server: flags.server }).listRooms()
+    const rooms = await new ChatroomClient({ server: flags.server, password: resolvePassword(flags.server) }).listRooms()
     if (flags.json) return console.log(JSON.stringify(rooms, null, 2))
-    for (const r of rooms) console.log(`${r.id}  [${r.last_seq} events]  ${r.title || '(untitled)'}`)
+    for (const r of rooms) console.log(`${r.id}  [${r.last_seq} events]  ${r.title || '(untitled)'}${r.cwd ? `  cwd=${r.cwd}` : ''}`)
   },
 
   async personas() {
     if (!flags.server) fail('--server is required')
-    const personas = await new ChatroomClient({ server: flags.server }).listPersonas()
+    const personas = await new ChatroomClient({ server: flags.server, password: resolvePassword(flags.server) }).listPersonas()
     if (flags.json) return console.log(JSON.stringify(personas, null, 2))
     for (const p of personas) console.log(`${p.id}  ${p.name}`)
   },
@@ -110,7 +141,8 @@ const commands = {
     } catch {
       /* fresh join */
     }
-    const client = new ChatroomClient({ server: flags.server })
+    const password = resolvePassword(flags.server)
+    const client = new ChatroomClient({ server: flags.server, password })
     const joined = await client.join({
       roomId: flags.room,
       nickname: flags.nickname,
@@ -195,6 +227,61 @@ const commands = {
   async whoami() {
     const state = loadState()
     console.log(JSON.stringify(state, null, 2))
+  },
+
+  async config() {
+    const sub = positionals[1]
+
+    if (sub === 'init') {
+      const config = loadConfig()
+      if (Object.keys(config).length > 0) {
+        console.log(`config already exists at ${CONFIG_PATH}:`)
+        console.log(JSON.stringify(config, null, 2))
+        return
+      }
+      const template = {
+        machine_id: '',
+        server: { access_password: '', port: 8787 },
+        servers: { 'localhost:8787': { password: '' } },
+      }
+      saveConfig(template)
+      console.log(`created template config at ${CONFIG_PATH}`)
+      console.log(`edit it to fill in your settings, then run \`chatroom config show\` to verify.`)
+      console.log(`note: machine_id will be auto-generated when you run \`chatroom init\`.`)
+      return
+    }
+
+    if (sub === 'show') {
+      const config = loadConfig()
+      if (!Object.keys(config).length) {
+        console.log(`no config found. run \`chatroom config init\` to create one at ${CONFIG_PATH}`)
+        return
+      }
+      const masked = JSON.parse(JSON.stringify(config))
+      if (masked.server?.access_password) masked.server.access_password = '***'
+      if (masked.servers) {
+        for (const s of Object.values(masked.servers)) {
+          if (s.password) s.password = '***'
+        }
+      }
+      console.log(`config: ${CONFIG_PATH}\n`)
+      console.log(JSON.stringify(masked, null, 2))
+      return
+    }
+
+    if (sub === 'set-password') {
+      if (!flags.server || !flags.password) fail('--server and --password are required')
+      const host = new URL(flags.server).host
+      const config = loadConfig()
+      if (!config.servers) config.servers = {}
+      config.servers[host] = { ...config.servers[host], password: flags.password }
+      saveConfig(config)
+      console.log(`saved password for ${host}`)
+      return
+    }
+
+    console.log('usage: chatroom config <init|show|set-password>')
+    process.exit(1)
   },
 }
 

@@ -1,11 +1,14 @@
 /** Minimal HTTP client for the chatroom server. Shared by the CLI and the MCP server. */
 
+import { getPasswordForServer } from './config.js'
+
 export class ChatroomClient {
-  /** @param {{server: string, token?: string, room_id?: string}} opts */
+  /** @param {{server: string, token?: string, room_id?: string, password?: string}} opts */
   constructor(opts) {
     this.server = opts.server.replace(/\/+$/, '')
     this.token = opts.token
     this.roomId = opts.room_id
+    this.password = opts.password ?? getPasswordForServer(opts.server)
   }
 
   async req(method, path, { body, query, timeoutMs, allowStatus } = {}) {
@@ -18,6 +21,7 @@ export class ChatroomClient {
       headers: {
         ...(body ? { 'content-type': 'application/json' } : {}),
         ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+        ...(this.password ? { 'x-access-password': this.password } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
       signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
@@ -35,8 +39,12 @@ export class ChatroomClient {
     return this.req('GET', '/api/rooms').then((r) => r.data)
   }
 
-  createRoom(title = '') {
-    return this.req('POST', '/api/rooms', { body: { title } }).then((r) => r.data)
+  createRoom(title = '', { cwd, machine_id } = {}) {
+    return this.req('POST', '/api/rooms', { body: { title, cwd, machine_id } }).then((r) => r.data)
+  }
+
+  resolveRoom(cwd, machineId) {
+    return this.req('GET', '/api/rooms/resolve', { query: { cwd, machine_id: machineId } }).then((r) => r.data)
   }
 
   listPersonas() {
