@@ -197,7 +197,8 @@ function ChatView({
 
   useEffect(() => {
     refreshMembers()
-    const timer = setInterval(refreshMembers, 2_000) // presence has no event; poll it
+    // SSE handles the fast path; fall back to 30s poll for resilience
+    const timer = setInterval(refreshMembers, 30_000)
     return () => clearInterval(timer)
   }, [refreshMembers])
 
@@ -248,6 +249,23 @@ function ChatView({
       const { uid, thinking } = JSON.parse((e as MessageEvent).data) as { uid: string; thinking: boolean }
       setMembers((prev) => prev.map((m) => m.uid === uid ? { ...m, thinking, online: m.online || thinking } : m))
     })
+    es.addEventListener('presence:snapshot', (e) => {
+      const { online } = JSON.parse((e as MessageEvent).data) as { online: string[] }
+      const onlineSet = new Set(online)
+      setMembers((prev) => prev.map((m) => ({ ...m, online: onlineSet.has(m.uid) || m.thinking })))
+    })
+    es.addEventListener('presence', (e) => {
+      const { uid, online } = JSON.parse((e as MessageEvent).data) as { uid: string; online: boolean }
+      setMembers((prev) => prev.map((m) => m.uid === uid ? { ...m, online: online || m.thinking } : m))
+    })
+    let lastErrorPoll = 0
+    es.onerror = () => {
+      const now = Date.now()
+      if (now - lastErrorPoll > 5_000) {
+        lastErrorPoll = now
+        refreshMembers()
+      }
+    }
     return () => es.close()
   }, [roomId, identity.token, onRoomChanged, refreshMembers])
 

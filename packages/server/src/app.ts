@@ -460,9 +460,15 @@ export function createApp(deps: AppDeps) {
         statusQueue.push({ uid, thinking })
         wakeup?.()
       })
+      const presenceQueue: Array<{uid: string, online: boolean}> = []
+      const unsubPresence = hub.subscribePresence(roomId, (uid, online) => {
+        presenceQueue.push({ uid, online })
+        wakeup?.()
+      })
       stream.onAbort(() => {
         unsub()
         unsubStatus()
+        unsubPresence()
         untrack()
         wakeup?.()
       })
@@ -472,15 +478,18 @@ export function createApp(deps: AppDeps) {
         await send(ev)
         after = ev.seq
       }
+      // send a presence snapshot so the client can sync member online state immediately
+      const onlineSnapshot = [...hub.onlineWithThinking(roomId)]
+      await stream.writeSSE({ event: 'presence:snapshot', data: JSON.stringify({ online: onlineSnapshot }) })
       while (!stream.aborted) {
-        if (queue.length === 0 && statusQueue.length === 0) {
+        if (queue.length === 0 && statusQueue.length === 0 && presenceQueue.length === 0) {
           await new Promise<void>((resolve) => {
             wakeup = resolve
             setTimeout(resolve, 15_000)
           })
           wakeup = null
           if (stream.aborted) break
-          if (queue.length === 0 && statusQueue.length === 0) {
+          if (queue.length === 0 && statusQueue.length === 0 && presenceQueue.length === 0) {
             await stream.writeSSE({ event: 'ping', data: '' })
             continue
           }
@@ -495,6 +504,10 @@ export function createApp(deps: AppDeps) {
         while (statusQueue.length > 0) {
           const s = statusQueue.shift()!
           await stream.writeSSE({ event: 'status', data: JSON.stringify(s) })
+        }
+        while (presenceQueue.length > 0) {
+          const p = presenceQueue.shift()!
+          await stream.writeSSE({ event: 'presence', data: JSON.stringify(p) })
         }
       }
     })
