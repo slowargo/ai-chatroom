@@ -317,7 +317,8 @@ export function createApp(deps: AppDeps) {
     return c.json(
       store.listParticipants(roomId).map((p) => ({
         ...publicParticipant(p),
-        online: online.has(p.uid),
+        online: online.has(p.uid) || hub.isThinking(roomId, p.uid),
+        thinking: hub.isThinking(roomId, p.uid),
         persona_name: p.persona_id ? store.getPersona(p.persona_id)?.name ?? null : null,
       })),
     )
@@ -397,9 +398,13 @@ export function createApp(deps: AppDeps) {
   })
 
   app.post('/api/rooms/:id/ack', auth, async (c) => {
+    const roomId = c.req.param('id')
     const body = (await c.req.json().catch(() => ({}))) as { seq?: number }
     if (typeof body.seq !== 'number') return c.json({ error: 'seq is required' }, 400)
-    return c.json({ last_acked_seq: store.ack(c.get('me').uid, body.seq) })
+    const me = c.get('me')
+    const result = store.ack(me.uid, body.seq)
+    if (me.type === 'agent') hub.setThinking(roomId, me.uid)
+    return c.json({ last_acked_seq: result })
   })
 
   // ---- agent long-poll ----
@@ -410,6 +415,7 @@ export function createApp(deps: AppDeps) {
     const after = c.req.query('after') !== undefined ? Number(c.req.query('after')) : me.last_acked_seq
     const windowMs = Math.min(Number(c.req.query('window_ms') ?? pollWindowMs), 120_000)
 
+    hub.clearThinking(roomId, me.uid)
     const untrack = hub.track(roomId, me.uid)
     const ac = new AbortController()
     const onClientGone = () => ac.abort()
@@ -449,8 +455,14 @@ export function createApp(deps: AppDeps) {
         queue.push(ev)
         wakeup?.()
       })
+      const statusQueue: Array<{uid: string, thinking: boolean}> = []
+      const unsubStatus = hub.subscribeStatus(roomId, (uid, thinking) => {
+        statusQueue.push({ uid, thinking })
+        wakeup?.()
+      })
       stream.onAbort(() => {
         unsub()
+        unsubStatus()
         untrack()
         wakeup?.()
       })
@@ -461,14 +473,14 @@ export function createApp(deps: AppDeps) {
         after = ev.seq
       }
       while (!stream.aborted) {
-        if (queue.length === 0) {
+        if (queue.length === 0 && statusQueue.length === 0) {
           await new Promise<void>((resolve) => {
             wakeup = resolve
             setTimeout(resolve, 15_000)
           })
           wakeup = null
           if (stream.aborted) break
-          if (queue.length === 0) {
+          if (queue.length === 0 && statusQueue.length === 0) {
             await stream.writeSSE({ event: 'ping', data: '' })
             continue
           }
@@ -479,6 +491,10 @@ export function createApp(deps: AppDeps) {
             await send(ev)
             after = ev.seq
           }
+        }
+        while (statusQueue.length > 0) {
+          const s = statusQueue.shift()!
+          await stream.writeSSE({ event: 'status', data: JSON.stringify(s) })
         }
       }
     })

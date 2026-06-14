@@ -218,6 +218,10 @@ function ChatView({
       if (ev.kind === 'room_deleted') { onRoomChanged(); location.hash = ''; return }
       if (ev.kind === 'member_joined' || ev.kind === 'member_left' || ev.kind === 'nickname_changed') refreshMembers()
     })
+    es.addEventListener('status', (e) => {
+      const { uid, thinking } = JSON.parse((e as MessageEvent).data) as { uid: string; thinking: boolean }
+      setMembers((prev) => prev.map((m) => m.uid === uid ? { ...m, thinking, online: m.online || thinking } : m))
+    })
     return () => es.close()
   }, [roomId, identity.token, onRoomChanged, refreshMembers])
 
@@ -328,6 +332,7 @@ function ChatView({
           <div key={m.uid} className="member">
             <span className={`dot ${m.online ? 'online' : ''}`} />
             <span className={`nick ${m.type}`}>{m.nickname}</span>
+            {m.thinking && <span className="thinking-dots"><span /><span /><span /></span>}
             {m.persona_name && <span className="badge">{m.persona_name}</span>}
             {m.uid === identity.uid && <span className="badge me">我</span>}
           </div>

@@ -1,6 +1,7 @@
 import type { ChatEvent } from './types.js'
 
 type Listener = (ev: ChatEvent) => void
+type StatusListener = (uid: string, thinking: boolean) => void
 
 /**
  * In-process fan-out for live events plus presence tracking.
@@ -10,6 +11,8 @@ type Listener = (ev: ChatEvent) => void
 export class Hub {
   private listeners = new Map<string, Set<Listener>>()
   private presence = new Map<string, Map<string, number>>()
+  private thinking = new Map<string, Set<string>>()           // roomId → Set of thinking uids
+  private statusListeners = new Map<string, Set<StatusListener>>() // roomId → listeners
 
   subscribe(roomId: string, fn: Listener): () => void {
     let set = this.listeners.get(roomId)
@@ -66,12 +69,43 @@ export class Hub {
       if (released) return
       released = true
       const count = room.get(uid) ?? 0
-      if (count <= 1) room.delete(uid)
-      else room.set(uid, count - 1)
+      if (count <= 1) {
+        room.delete(uid)
+        this.clearThinking(roomId, uid)
+      } else room.set(uid, count - 1)
     }
   }
 
   online(roomId: string): Set<string> {
     return new Set(this.presence.get(roomId)?.keys() ?? [])
+  }
+
+  subscribeStatus(roomId: string, fn: StatusListener): () => void {
+    let set = this.statusListeners.get(roomId)
+    if (!set) this.statusListeners.set(roomId, (set = new Set()))
+    set.add(fn)
+    return () => set.delete(fn)
+  }
+
+  setThinking(roomId: string, uid: string): void {
+    let set = this.thinking.get(roomId)
+    if (!set) this.thinking.set(roomId, (set = new Set()))
+    set.add(uid)
+    for (const fn of [...(this.statusListeners.get(roomId) ?? [])]) {
+      try { fn(uid, true) } catch { /* broken subscriber must not break fan-out */ }
+    }
+  }
+
+  clearThinking(roomId: string, uid: string): void {
+    const set = this.thinking.get(roomId)
+    if (!set?.has(uid)) return
+    set.delete(uid)
+    for (const fn of [...(this.statusListeners.get(roomId) ?? [])]) {
+      try { fn(uid, false) } catch { /* broken subscriber must not break fan-out */ }
+    }
+  }
+
+  isThinking(roomId: string, uid: string): boolean {
+    return this.thinking.get(roomId)?.has(uid) ?? false
   }
 }
