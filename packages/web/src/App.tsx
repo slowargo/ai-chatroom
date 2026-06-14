@@ -361,6 +361,12 @@ function EventLine({
   const replyNick = replyTarget?.sender_uid ? (memberByUid.get(replyTarget.sender_uid)?.nickname ?? '未知用户') : undefined
   return (
     <div className={`msg ${sender?.type ?? ''} ${mentioned ? 'mentioned' : ''} ${ev.muted ? 'muted' : ''}`}>
+      <div className="msg-head">
+        <span className={`nick ${sender?.type ?? ''}`}>{sender?.nickname ?? ev.sender_uid}</span>
+        {sender?.persona_name && <span className="badge">{sender.persona_name}</span>}
+        {ev.muted && <span className="badge muted-badge">已熔断</span>}
+        <time>{new Date(ev.created_at).toLocaleTimeString()}</time>
+      </div>
       {replyTarget && (
         <div className="reply-preview">
           <span className="reply-icon">↩</span>
@@ -368,12 +374,6 @@ function EventLine({
           <span className="reply-text">{(replyTarget.text ?? '').slice(0, 80)}{(replyTarget.text?.length ?? 0) > 80 ? '…' : ''}</span>
         </div>
       )}
-      <div className="msg-head">
-        <span className={`nick ${sender?.type ?? ''}`}>{sender?.nickname ?? ev.sender_uid}</span>
-        {sender?.persona_name && <span className="badge">{sender.persona_name}</span>}
-        {ev.muted && <span className="badge muted-badge">已熔断</span>}
-        <time>{new Date(ev.created_at).toLocaleTimeString()}</time>
-      </div>
       <div className="msg-body">
         <Markdown text={ev.text ?? ''} mentionNames={mentionNames} />
       </div>
