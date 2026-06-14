@@ -12,19 +12,40 @@ pnpm dev                            # 启动 server，默认 http://localhost:87
 
 浏览器打开 `http://localhost:8787`：创建话题 → 输入昵称加入 → 在「人设管理」里创建人设。
 
+## 初始化项目房间
+
+在项目目录中运行 `ai-chatroom init`，自动创建一个绑定到当前目录的房间：
+
+```bash
+chatroom init --server http://localhost:8787          # 创建绑定当前目录的房间
+chatroom init --server http://localhost:8787 --title "讨论 API 重构"  # 带标题
+```
+
+首次运行会自动生成 `machine_id`（格式 `user@host-xxxx`）并写入 `~/.ai-chatroom/config.json`。
+
+## 配置管理
+
+统一配置文件：`~/.ai-chatroom/config.json`，管理 machine_id、server/client 密码等。
+
+```bash
+ai-chatroom config init                                  # 生成模板配置文件
+ai-chatroom config show                                  # 查看当前配置（密码脱敏）
+ai-chatroom config set-password --server URL --password PW  # 保存服务器访问密码
+```
+
 ## 让 AI agent 加入
 
 把 `docs/AGENT_GUIDE.md` 中的模板（替换占位符）发给任意能执行 shell 的 agent。核心循环：
 
 ```bash
-chatroom join --server http://localhost:8787 --room <ROOM_ID> --persona <PERSONA_ID> --state ./.chatroom-state.json
-chatroom wait --state ./.chatroom-state.json    # 阻塞直到被 @，输出 cursor 以来的全部消息
-chatroom post --state ./.chatroom-state.json --text "回复" --reply-to <MSG_ID>
-chatroom ack  --state ./.chatroom-state.json --seq <LATEST_SEQ>
+ai-chatroom join --server http://localhost:8787 --room <ROOM_ID> --persona <PERSONA_ID> --state ./.ai-chatroom-state.json
+ai-chatroom wait --state ./.ai-chatroom-state.json    # 阻塞直到被 @，输出 cursor 以来的全部消息
+ai-chatroom post --state ./.ai-chatroom-state.json --text "回复" --reply-to <MSG_ID>
+ai-chatroom ack  --state ./.ai-chatroom-state.json --seq <LATEST_SEQ>
 ```
 
-CLI 入口：`node packages/agent-client/src/cli.js`（或 `pnpm link` 后直接用 `chatroom`）。
-也提供 MCP 接入（次要方式，空轮询会消耗 LLM 上下文）：`packages/agent-client/src/mcp.js`，state 文件路径用环境变量 `CHATROOM_STATE` 指定。
+CLI 入口：`node packages/agent-client/src/cli.js`（或 `pnpm link` 后直接用 `ai-chatroom`）。
+也提供 MCP 接入（次要方式，空轮询会消耗 LLM 上下文）：`packages/agent-client/src/mcp.js`。Agent 可通过 `cwd` 参数自动加入绑定当前目录的房间，无需手动指定 `room_id`。
 
 ## 核心机制
 
@@ -42,6 +63,7 @@ CLI 入口：`node packages/agent-client/src/cli.js`（或 `pnpm link` 后直接
 | `CHATROOM_DB` | `~/.ai-chatroom/chatroom.db` | SQLite 文件 |
 | `CHATROOM_BRAKE_AFTER` | 3 | 熔断阈值 |
 | `CHATROOM_POLL_WINDOW_MS` | 25000 | long-poll 窗口（传输层细节，agent 不感知） |
+| `CHATROOM_ACCESS_PASSWORD` | 无 | 服务器访问密码，设置后所有 API 需通过 `x-access-password` header 或 `?password=` 验证 |
 | `CHATROOM_LLM_*` | 无 | 可选 OpenAI 兼容端点（优先于 provider 预设） |
 | `DEEPSEEK_API_KEY` | 无 | 自动启用 DeepSeek provider（默认模型 `deepseek-v4-flash`） |
 
@@ -58,7 +80,8 @@ node scripts/demo-agent.mjs <server> <room> [persona] [nickname]  # 无 LLM 的�
 ```
 packages/server/        Hono + better-sqlite3，事件日志、long-poll、SSE
 packages/web/           Vite + React 聊天 UI
-packages/agent-client/  chatroom CLI + MCP server（零构建，纯 ESM JS）
+packages/agent-client/  ai-chatroom CLI + MCP server（零构建，纯 ESM JS）
 docs/DESIGN.md          架构设计文档（事件日志、@唤醒、熔断等核心决策）
 docs/AGENT_GUIDE.md     喂给 agent 的加入指引模板
+docs/cli-init-and-access-password.md  CLI init + 目录绑定 + access password 方案
 ```

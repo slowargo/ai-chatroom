@@ -403,3 +403,160 @@ describe('llm provider api', () => {
     expect(info).toEqual({ enabled: true, provider: 'custom', model: 'm2' })
   })
 })
+
+// ---- room cwd/machine_id ----
+
+describe('room cwd and machine_id', () => {
+  it('stores cwd and machine_id on room creation', async () => {
+    const res = await api('/api/rooms', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'test', cwd: '/home/user/project', machine_id: 'user@host-ab12' }),
+    })
+    const room = await json(res)
+    expect(room.cwd).toBe('/home/user/project')
+    expect(room.machine_id).toBe('user@host-ab12')
+
+    const fetched = await json(await api(`/api/rooms/${room.id}`))
+    expect(fetched.cwd).toBe('/home/user/project')
+    expect(fetched.machine_id).toBe('user@host-ab12')
+  })
+
+  it('defaults cwd and machine_id to null', async () => {
+    const room = await json(await api('/api/rooms', { method: 'POST', body: '{}' }))
+    expect(room.cwd).toBeNull()
+    expect(room.machine_id).toBeNull()
+  })
+
+  it('includes cwd and machine_id in room listing', async () => {
+    await api('/api/rooms', {
+      method: 'POST',
+      body: JSON.stringify({ cwd: '/tmp/a', machine_id: 'ma' }),
+    })
+    const rooms = await json<any[]>(await api('/api/rooms'))
+    const r = rooms.find((x: any) => x.cwd === '/tmp/a')
+    expect(r).toBeTruthy()
+    expect(r.machine_id).toBe('ma')
+  })
+})
+
+// ---- /api/rooms/resolve ----
+
+describe('room resolve by cwd', () => {
+  it('resolves a room by cwd', async () => {
+    const created = await json(
+      await api('/api/rooms', {
+        method: 'POST',
+        body: JSON.stringify({ cwd: '/project/alpha', machine_id: 'dev@box-1234' }),
+      }),
+    )
+    const resolved = await json(await api('/api/rooms/resolve?cwd=/project/alpha'))
+    expect(resolved.id).toBe(created.id)
+  })
+
+  it('prefers cwd+machine_id match over cwd-only', async () => {
+    const r1 = await json(
+      await api('/api/rooms', {
+        method: 'POST',
+        body: JSON.stringify({ cwd: '/shared', machine_id: 'host-a' }),
+      }),
+    )
+    const r2 = await json(
+      await api('/api/rooms', {
+        method: 'POST',
+        body: JSON.stringify({ cwd: '/shared', machine_id: 'host-b' }),
+      }),
+    )
+    const resolved = await json(await api('/api/rooms/resolve?cwd=/shared&machine_id=host-a'))
+    expect(resolved.id).toBe(r1.id)
+
+    const resolvedB = await json(await api('/api/rooms/resolve?cwd=/shared&machine_id=host-b'))
+    expect(resolvedB.id).toBe(r2.id)
+  })
+
+  it('falls back to cwd-only when machine_id does not match', async () => {
+    const created = await json(
+      await api('/api/rooms', {
+        method: 'POST',
+        body: JSON.stringify({ cwd: '/fallback', machine_id: 'host-x' }),
+      }),
+    )
+    const resolved = await json(await api('/api/rooms/resolve?cwd=/fallback&machine_id=host-unknown'))
+    expect(resolved.id).toBe(created.id)
+  })
+
+  it('returns newest room when multiple share the same cwd', async () => {
+    await api('/api/rooms', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'old', cwd: '/multi' }),
+    })
+    const newer = await json(
+      await api('/api/rooms', {
+        method: 'POST',
+        body: JSON.stringify({ title: 'new', cwd: '/multi' }),
+      }),
+    )
+    const resolved = await json(await api('/api/rooms/resolve?cwd=/multi'))
+    expect(resolved.id).toBe(newer.id)
+  })
+
+  it('returns 404 when no room matches', async () => {
+    const res = await api('/api/rooms/resolve?cwd=/nonexistent')
+    expect(res.status).toBe(404)
+  })
+
+  it('returns 400 when cwd is missing', async () => {
+    const res = await api('/api/rooms/resolve')
+    expect(res.status).toBe(400)
+  })
+})
+
+// ---- access password ----
+
+describe('access password', () => {
+  let protectedApp: App
+
+  beforeEach(() => {
+    protectedApp = createApp({
+      store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
+      hub: new Hub(),
+      llm: new Llm(),
+      pollWindowMs: 100,
+      accessPassword: 'test-secret',
+    })
+  })
+
+  function papi(path: string, init?: RequestInit & { token?: string; password?: string }) {
+    const headers = new Headers(init?.headers)
+    if (init?.body) headers.set('content-type', 'application/json')
+    if (init?.token) headers.set('authorization', `Bearer ${init.token}`)
+    if (init?.password) headers.set('x-access-password', init.password)
+    return protectedApp.request(path, { ...init, headers })
+  }
+
+  it('rejects API requests without password', async () => {
+    const res = await papi('/api/rooms')
+    expect(res.status).toBe(401)
+    const body = await res.json() as any
+    expect(body.error).toContain('access password')
+  })
+
+  it('rejects API requests with wrong password', async () => {
+    const res = await papi('/api/rooms', { password: 'wrong' })
+    expect(res.status).toBe(401)
+  })
+
+  it('allows API requests with correct password', async () => {
+    const res = await papi('/api/rooms', { password: 'test-secret' })
+    expect(res.status).toBe(200)
+  })
+
+  it('accepts password via query param', async () => {
+    const res = await papi('/api/rooms?password=test-secret')
+    expect(res.status).toBe(200)
+  })
+
+  it('rejects password via query param when wrong', async () => {
+    const res = await papi('/api/rooms?password=wrong')
+    expect(res.status).toBe(401)
+  })
+})

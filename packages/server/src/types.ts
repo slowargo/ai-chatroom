@@ -7,6 +7,8 @@ export interface Room {
   title: string
   /** 1 = title is auto-generated and may still be refined; 0 = user-fixed, locked */
   title_auto: number
+  cwd: string | null
+  machine_id: string | null
   created_at: string
 }
 

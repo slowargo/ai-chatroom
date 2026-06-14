@@ -1,11 +1,11 @@
 {
   "name": "@chatroom/agent-client",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "bin": {
-    "chatroom": "./src/cli.js",
-    "chatroom-mcp": "./src/mcp.js"
+    "ai-chatroom": "./src/cli.js",
+    "ai-chatroom-mcp": "./src/mcp.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

@@ -77,12 +77,19 @@ export class Store {
 
   // ---- rooms ----
 
-  createRoom(title = ''): Room {
+  createRoom(title = '', opts: { cwd?: string; machine_id?: string } = {}): Room {
     // an explicit title at creation is user-fixed (auto=0); an empty one awaits auto-decoration (auto=1)
-    const room: Room = { id: ulid(), title, title_auto: title ? 0 : 1, created_at: this.now() }
+    const room: Room = {
+      id: ulid(),
+      title,
+      title_auto: title ? 0 : 1,
+      cwd: opts.cwd ?? null,
+      machine_id: opts.machine_id ?? null,
+      created_at: this.now(),
+    }
     this.db
-      .prepare('INSERT INTO rooms (id, title, title_auto, created_at) VALUES (?, ?, ?, ?)')
-      .run(room.id, room.title, room.title_auto, room.created_at)
+      .prepare('INSERT INTO rooms (id, title, title_auto, cwd, machine_id, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(room.id, room.title, room.title_auto, room.cwd, room.machine_id, room.created_at)
     return room
   }
 
@@ -97,6 +104,22 @@ export class Store {
 
   getRoom(id: string): Room | undefined {
     return this.db.prepare('SELECT * FROM rooms WHERE id = ?').get(id) as Room | undefined
+  }
+
+  /**
+   * Find the most recent room associated with a working directory.
+   * Prefers an exact cwd + machine_id match; falls back to cwd-only if machineId is provided but no exact match.
+   */
+  findRoomByCwd(cwd: string, machineId?: string): Room | undefined {
+    if (machineId) {
+      const exact = this.db
+        .prepare('SELECT * FROM rooms WHERE cwd = ? AND machine_id = ? ORDER BY id DESC LIMIT 1')
+        .get(cwd, machineId) as Room | undefined
+      if (exact) return exact
+    }
+    return this.db
+      .prepare('SELECT * FROM rooms WHERE cwd = ? ORDER BY id DESC LIMIT 1')
+      .get(cwd) as Room | undefined
   }
 
   deleteRoom(id: string): boolean {

@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { createMiddleware } from 'hono/factory'
 import { streamSSE } from 'hono/streaming'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { extname, join, normalize } from 'node:path'
 import type { Hub } from './hub.js'
@@ -19,6 +20,8 @@ export interface AppDeps {
   pollWindowMs?: number
   /** absolute path of the built web UI; omit to disable static serving */
   webDist?: string
+  /** if set, all /api/* routes require this password via x-access-password header or ?password= query param */
+  accessPassword?: string | null
 }
 
 type Env = { Variables: { me: Participant } }
@@ -67,6 +70,16 @@ export function createApp(deps: AppDeps) {
   // slower earlier-milestone generation clobbering a later, richer one (last-writer-wins is wrong here)
   const lastTitledCount = new Map<string, number>()
 
+  if (deps.accessPassword) {
+    const hash = (s: string) => createHash('sha256').update(s).digest()
+    const pwHash = hash(deps.accessPassword)
+    app.use('/api/*', async (c, next) => {
+      const pw = c.req.header('x-access-password') ?? c.req.query('password') ?? ''
+      if (!timingSafeEqual(hash(pw), pwHash)) return c.json({ error: 'access password required' }, 401)
+      await next()
+    })
+  }
+
   const auth = createMiddleware<Env>(async (c, next) => {
     const token =
       c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? c.req.query('token')
@@ -96,11 +109,19 @@ export function createApp(deps: AppDeps) {
   // ---- rooms ----
 
   app.post('/api/rooms', async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as { title?: string }
-    return c.json(store.createRoom(body.title ?? ''), 201)
+    const body = (await c.req.json().catch(() => ({}))) as { title?: string; cwd?: string; machine_id?: string }
+    return c.json(store.createRoom(body.title ?? '', { cwd: body.cwd, machine_id: body.machine_id }), 201)
   })
 
   app.get('/api/rooms', (c) => c.json(store.listRooms()))
+
+  app.get('/api/rooms/resolve', (c) => {
+    const cwd = c.req.query('cwd')
+    if (!cwd) return c.json({ error: 'cwd is required' }, 400)
+    const machineId = c.req.query('machine_id') ?? undefined
+    const room = store.findRoomByCwd(cwd, machineId)
+    return room ? c.json(room) : c.json({ error: 'no room found for this cwd' }, 404)
+  })
 
   app.get('/api/rooms/:id', (c) => {
     const room = store.getRoom(c.req.param('id'))

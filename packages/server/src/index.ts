@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createApp } from './app.js'
+import { loadServerConfig } from './config.js'
 import { openDb } from './db.js'
 import { Hub } from './hub.js'
 import { Llm } from './llm.js'
@@ -16,6 +17,8 @@ const dbPath = process.env.CHATROOM_DB ?? join(dataDir, 'chatroom.db')
 const here = dirname(fileURLToPath(import.meta.url))
 const webDist = resolve(here, '../../web/dist')
 
+const serverConfig = loadServerConfig()
+
 const store = new Store(openDb(dbPath), {
   brakeAfter: Number(process.env.CHATROOM_BRAKE_AFTER ?? 3),
 })
@@ -25,11 +28,13 @@ const app = createApp({
   llm: Llm.fromEnv(),
   pollWindowMs: Number(process.env.CHATROOM_POLL_WINDOW_MS ?? 25_000),
   webDist: existsSync(webDist) ? webDist : undefined,
+  accessPassword: serverConfig.accessPassword,
 })
 
-const port = Number(process.env.CHATROOM_PORT ?? 8787)
+const port = serverConfig.port
 serve({ fetch: app.fetch, port }, (info) => {
   console.log(`ai-chatroom server listening on http://localhost:${info.port}`)
   console.log(`db: ${dbPath}`)
   console.log(`web ui: ${existsSync(webDist) ? webDist : '(not built — run pnpm --filter @chatroom/web build)'}`)
+  if (serverConfig.accessPassword) console.log('access password: enabled')
 })
