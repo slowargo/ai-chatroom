@@ -17,8 +17,8 @@ pnpm dev                            # 启动 server，默认 http://localhost:87
 在项目目录中运行 `ai-chatroom init`，自动创建一个绑定到当前目录的房间：
 
 ```bash
-chatroom init --server http://localhost:8787          # 创建绑定当前目录的房间
-chatroom init --server http://localhost:8787 --title "讨论 API 重构"  # 带标题
+ai-chatroom init --server http://localhost:8787          # 创建绑定当前目录的房间
+ai-chatroom init --server http://localhost:8787 --title "讨论 API 重构"  # 带标题
 ```
 
 首次运行会自动生成 `machine_id`（格式 `user@host-xxxx`）并写入 `~/.ai-chatroom/config.json`。
