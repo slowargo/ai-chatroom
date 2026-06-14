@@ -34,6 +34,18 @@ export function ensureMachineId() {
 }
 
 /**
+ * Resolve the chatroom server URL from (in priority order):
+ * 1. explicit flag value  2. $CHATROOM_SERVER  3. config default_server  4. http://localhost:8787
+ */
+export function resolveServer(flagValue) {
+  if (flagValue) return flagValue
+  if (process.env.CHATROOM_SERVER) return process.env.CHATROOM_SERVER
+  const config = loadConfig()
+  if (config.default_server) return config.default_server
+  return 'http://localhost:8787'
+}
+
+/**
  * Look up the stored password for a given server URL.
  * Matches on host:port from the URL.
  */
