@@ -101,17 +101,26 @@ export class Llm {
             { role: 'system', content: system },
             { role: 'user', content: user },
           ],
-          max_tokens: 60,
+          max_tokens: 1024,
           temperature: 0.7,
         }),
         signal: AbortSignal.timeout(this.cfg.timeoutMs ?? 10_000),
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> }
-      const content = data.choices?.[0]?.message?.content?.trim()
+      if (!res.ok) {
+        const body = await res.text().catch(() => '')
+        throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`)
+      }
+      const data = (await res.json()) as {
+        choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>
+      }
+      const msg = data.choices?.[0]?.message
+      const reasoning = msg?.reasoning_content?.trim()
+      const lastLine = reasoning?.split('\n').filter(Boolean).pop()?.trim()
+      const content = msg?.content?.trim() || lastLine
+      if (!content) console.warn(`[llm] empty response: ${JSON.stringify(data).slice(0, 300)}`)
       return content || null
     } catch (err) {
-      console.warn('[llm] call failed, falling back:', (err as Error).message)
+      console.warn('[llm] call failed:', (err as Error).message)
       return null
     }
   }
