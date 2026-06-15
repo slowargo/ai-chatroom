@@ -86,7 +86,7 @@ export class Llm {
     }
   }
 
-  private async chat(system: string, user: string): Promise<string | null> {
+  private async chat(system: string, user: string, maxTokens = 1024): Promise<string | null> {
     if (!this.enabled()) return null
     try {
       const res = await fetch(`${this.cfg.baseUrl!.replace(/\/+$/, '')}/chat/completions`, {
@@ -101,7 +101,7 @@ export class Llm {
             { role: 'system', content: system },
             { role: 'user', content: user },
           ],
-          max_tokens: 1024,
+          max_tokens: maxTokens,
           temperature: 0.7,
           // DeepSeek-specific: disable thinking mode so content is returned normally
           ...(this.cfg.provider === 'deepseek' ? { thinking: { type: 'disabled' } } : {}),
@@ -132,8 +132,9 @@ export class Llm {
     }
     const transcript = messages.map((m) => `${m.nickname}: ${truncate(m.text, 400)}`).join('\n')
     const title = await this.chat(
-      'You are naming a chatroom topic.\nGenerate a descriptive topic title (max 40 characters, same language as the conversation) that captures the specific subject being discussed.\nKeep concrete nouns and key terms — prefer "关于PR#123的代码审查" over "审查计划与代码", "PR #123 code review" over "Review and planning".\nFocus on the topic or task, not the participants. Reply with the title only — no quotes, no punctuation around it.',
+      'You are naming a chatroom topic.\nGenerate a descriptive topic title (max 40 characters, same language as the conversation) that captures the specific subject being discussed.\nKeep concrete nouns and key terms — prefer "关于PR#123的代码审查" over "审查计划与代码", "PR #123 code review" over "Review and planning".\nThe opening messages usually establish the main topic. Later messages may branch into subtopics — the title should reflect the primary topic, not tangents.\nFocus on the topic or task, not the participants. Reply with the title only — no quotes, no punctuation around it.',
       transcript,
+      64,
     )
     return title ? title.split('\n')[0].slice(0, 40) : null
   }
