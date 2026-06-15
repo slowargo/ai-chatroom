@@ -103,6 +103,8 @@ export class Llm {
           ],
           max_tokens: 1024,
           temperature: 0.7,
+          // DeepSeek-specific: disable thinking mode so content is returned normally
+          ...(this.cfg.provider === 'deepseek' ? { thinking: { type: 'disabled' } } : {}),
         }),
         signal: AbortSignal.timeout(this.cfg.timeoutMs ?? 10_000),
       })
@@ -111,12 +113,10 @@ export class Llm {
         throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`)
       }
       const data = (await res.json()) as {
-        choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>
+        choices?: Array<{ message?: { content?: string } }>
       }
       const msg = data.choices?.[0]?.message
-      const reasoning = msg?.reasoning_content?.trim()
-      const lastLine = reasoning?.split('\n').filter(Boolean).pop()?.trim()
-      const content = msg?.content?.trim() || lastLine
+      const content = msg?.content?.trim()
       if (!content) console.warn(`[llm] empty response: ${JSON.stringify(data).slice(0, 300)}`)
       return content || null
     } catch (err) {

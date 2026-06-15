@@ -372,6 +372,14 @@ export function createApp(deps: AppDeps) {
           console.log(`[title] room=${roomId} milestone=${count} skipped: later milestone already applied`)
           return
         }
+        // LLM was configured but this call failed: keep the existing (LLM-generated)
+        // title rather than downgrading to the crude fallback or locking it. When the
+        // LLM is disabled entirely, every title is a fallback and the milestone
+        // progression (e.g. bare URL → first real reply) must still apply.
+        if (llm.enabled() && generated == null && current.title) {
+          console.log(`[title] room=${roomId} milestone=${count} generation failed; keeping existing title`)
+          return
+        }
         const title = generated ?? fallbackTitle(recent)
         console.log(`[title] room=${roomId} milestone=${count} generated=${generated != null} title=${JSON.stringify(title)}`)
         if (!title || title === current.title) {
