@@ -109,16 +109,18 @@ export class Store {
   /**
    * Find the most recent room associated with a working directory.
    * Prefers an exact cwd + machine_id match; falls back to cwd-only if machineId is provided but no exact match.
+   * Orders by rowid (insertion order) rather than id: ULIDs minted in the same millisecond order by
+   * their random component, which does not reflect creation order — rowid is strictly monotonic.
    */
   findRoomByCwd(cwd: string, machineId?: string): Room | undefined {
     if (machineId) {
       const exact = this.db
-        .prepare('SELECT * FROM rooms WHERE cwd = ? AND machine_id = ? ORDER BY id DESC LIMIT 1')
+        .prepare('SELECT * FROM rooms WHERE cwd = ? AND machine_id = ? ORDER BY rowid DESC LIMIT 1')
         .get(cwd, machineId) as Room | undefined
       if (exact) return exact
     }
     return this.db
-      .prepare('SELECT * FROM rooms WHERE cwd = ? ORDER BY id DESC LIMIT 1')
+      .prepare('SELECT * FROM rooms WHERE cwd = ? ORDER BY rowid DESC LIMIT 1')
       .get(cwd) as Room | undefined
   }
 
