@@ -13,6 +13,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { ChatroomClient } from './client.js'
 import { getPasswordForServer, loadConfig } from './config.js'
+import { ADDRESSING_GUIDANCE } from './guidance.js'
 
 // default server so agents don't have to guess the port; override with CHATROOM_SERVER
 const DEFAULT_SERVER = process.env.CHATROOM_SERVER || 'http://localhost:8787'
@@ -140,7 +141,12 @@ server.registerTool(
       rejoined: joined.rejoined,
       cursor: joined.last_acked_seq,
       persona: joined.persona ? { name: joined.persona.name, system_prompt: joined.persona.system_prompt } : null,
-      next: 'Automatically call chatroom_wait now to listen for mentions in a loop. When you receive mentions_you events: 1) chatroom_ack with latest_seq, 2) chatroom_post your reply with reply_to=<msg_id>, 3) loop back to chatroom_wait. ALWAYS use chatroom_post to send replies — do NOT just output text as the agent response.',
+      etiquette: ADDRESSING_GUIDANCE,
+      next: 'Adopt the persona system_prompt (if any) AND the `etiquette` rule above as standing rules for this room. ' +
+        'Automatically call chatroom_wait now to listen for mentions in a loop. When a message genuinely calls for your response: ' +
+        '1) chatroom_ack with latest_seq, 2) chatroom_post your reply with reply_to=<msg_id>, 3) loop back to chatroom_wait. ' +
+        'If a message only mentions you in passing (someone else is the one being asked), just chatroom_ack and call chatroom_wait again without posting. ' +
+        'ALWAYS use chatroom_post to send replies — do NOT just output text as the agent response.',
     })
   },
 )
@@ -168,7 +174,9 @@ server.registerTool(
     if (result.status === 'approved') {
       return text({
         ...result,
-        next: `Join approved! You are now "${result.assigned_nickname}" (uid: ${result.assigned_uid}). Use token="${result.token}" with server="${url}" and room_id="${room_id}". Now automatically call chatroom_wait to start listening for mentions.`,
+        etiquette: ADDRESSING_GUIDANCE,
+        next: `Join approved! You are now "${result.assigned_nickname}" (uid: ${result.assigned_uid}). Use token="${result.token}" with server="${url}" and room_id="${room_id}". ` +
+          'Adopt the `etiquette` rule above as a standing rule for this room. Now automatically call chatroom_wait to start listening for mentions.',
       })
     }
     if (result.status === 'rejected') {
@@ -196,7 +204,9 @@ server.registerTool(
     // Add actionable next steps when there are mentions to reply to
     const mentionsYou = result.events?.filter(e => e.mentions_you && !e.replied_by_you) || []
     if (mentionsYou.length > 0) {
-      result.next = `You have ${mentionsYou.length} mention(s) to reply to. For each: 1) chatroom_ack with latest_seq, 2) chatroom_post your reply with reply_to=<msg_id>, 3) chatroom_wait for more. Always use chatroom_post to send replies — do NOT just output text.`
+      result.next = `You have ${mentionsYou.length} message(s) mentioning you. ${ADDRESSING_GUIDANCE} ` +
+        'For each message that does call for your response: 1) chatroom_ack with latest_seq, 2) chatroom_post your reply with reply_to=<msg_id>, 3) chatroom_wait for more. ' +
+        'For any that do not, just chatroom_ack with latest_seq and chatroom_wait again. Always use chatroom_post to send replies — do NOT just output text.'
     }
     return text(result)
   },

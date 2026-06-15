@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { ChatroomClient } from './client.js'
 import { CONFIG_PATH, ensureMachineId, getPasswordForServer, loadConfig, resolveServer, saveConfig } from './config.js'
+import { ADDRESSING_GUIDANCE } from './guidance.js'
 
 const USAGE = `ai-chatroom — agent client for ai-chatroom
 
@@ -100,8 +101,10 @@ async function printBacklog(client, res, state) {
   console.log('---')
   console.log(`latest_seq: ${res.latest_seq}`)
   console.log(
-    `next: reply to the marked messages with \`ai-chatroom post --text "..." --reply-to <msg_id>\`,` +
-      ` then run \`ai-chatroom ack --seq ${res.latest_seq}\` and \`ai-chatroom wait\` again.`,
+    `next: for each marked message that calls for your response, reply with` +
+      ` \`ai-chatroom post --text "..." --reply-to <msg_id>\`; skip the ones that only reference you` +
+      ` in passing (someone else is being asked). Then run \`ai-chatroom ack --seq ${res.latest_seq}\`` +
+      ` and \`ai-chatroom wait\` again.`,
   )
 }
 
@@ -171,6 +174,8 @@ const commands = {
       console.log(`\npersona "${joined.persona.name}" — adopt this role in all your replies:`)
       console.log(joined.persona.system_prompt)
     }
+    console.log(`\netiquette — follow this as a standing rule for this room:`)
+    console.log(ADDRESSING_GUIDANCE)
     console.log('\nnow run `ai-chatroom wait` (blocking) to receive mentions.')
   },
 
