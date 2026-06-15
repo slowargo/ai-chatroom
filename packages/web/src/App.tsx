@@ -24,7 +24,35 @@ export default function App() {
     api.rooms().then(setRooms).catch(console.error)
   }, [])
 
-  useEffect(refreshRooms, [refreshRooms])
+  useEffect(() => {
+    const es = new EventSource('/api/rooms/stream')
+    es.addEventListener('rooms:snapshot', (e) => {
+      setRooms(JSON.parse((e as MessageEvent).data))
+    })
+    es.addEventListener('room:created', (e) => {
+      const room = JSON.parse((e as MessageEvent).data) as Room
+      setRooms(prev => prev.some(r => r.id === room.id) ? prev : [...prev, room])
+    })
+    es.addEventListener('room:deleted', (e) => {
+      const { id } = JSON.parse((e as MessageEvent).data) as Room
+      setRooms(prev => prev.filter(r => r.id !== id))
+    })
+    es.addEventListener('room:updated', (e) => {
+      const room = JSON.parse((e as MessageEvent).data) as Room
+      setRooms(prev => prev.map(r => r.id === room.id ? room : r))
+    })
+    let lastErrorPoll = 0
+    es.onerror = () => {
+      const now = Date.now()
+      if (now - lastErrorPoll > 5_000) {
+        lastErrorPoll = now
+        refreshRooms()
+      }
+    }
+    // 60s polling fallback for last_seq (message count) freshness
+    const timer = setInterval(refreshRooms, 60_000)
+    return () => { es.close(); clearInterval(timer) }
+  }, [refreshRooms])
 
   useEffect(() => {
     const onHash = () => setRoomId(location.hash.slice(1) || null)
@@ -34,7 +62,7 @@ export default function App() {
 
   const createRoom = async () => {
     const room = await api.createRoom()
-    refreshRooms()
+    setRooms(prev => prev.some(r => r.id === room.id) ? prev : [...prev, room])
     location.hash = room.id
   }
 
@@ -46,7 +74,7 @@ export default function App() {
       await api.deleteRoom(id)
       localStorage.removeItem(identityKey(id))
       if (roomId === id) location.hash = ''
-      refreshRooms()
+      setRooms(prev => prev.filter(r => r.id !== id))
     } catch (err) {
       console.error(err)
     }
@@ -83,7 +111,7 @@ export default function App() {
       {showPersonas ? (
         <PersonaPanel />
       ) : roomId ? (
-        <ChatRoom key={roomId} roomId={roomId} onRoomChanged={refreshRooms} />
+        <ChatRoom key={roomId} roomId={roomId} />
       ) : (
         <main className="empty">选择或创建一个话题开始讨论</main>
       )}
@@ -126,12 +154,12 @@ function LlmStatus() {
   )
 }
 
-function ChatRoom({ roomId, onRoomChanged }: { roomId: string; onRoomChanged: () => void }) {
+function ChatRoom({ roomId }: { roomId: string }) {
   const [identity, setIdentity] = useState<Identity | null>(() => loadIdentity(roomId))
   if (!identity) {
     return <JoinGate roomId={roomId} onJoined={setIdentity} />
   }
-  return <ChatView roomId={roomId} identity={identity} onRoomChanged={onRoomChanged} />
+  return <ChatView roomId={roomId} identity={identity} />
 }
 
 function JoinGate({ roomId, onJoined }: { roomId: string; onJoined: (id: Identity) => void }) {
@@ -170,11 +198,9 @@ function JoinGate({ roomId, onJoined }: { roomId: string; onJoined: (id: Identit
 function ChatView({
   roomId,
   identity,
-  onRoomChanged,
 }: {
   roomId: string
   identity: Identity
-  onRoomChanged: () => void
 }) {
   const [events, setEvents] = useState<ChatEvent[]>([])
   const [members, setMembers] = useState<Member[]>([])
@@ -241,8 +267,7 @@ function ChatView({
     es.addEventListener('chat', (e) => {
       const ev = JSON.parse((e as MessageEvent).data) as ChatEvent
       setEvents((prev) => (prev.some((p) => p.seq === ev.seq) ? prev : [...prev, ev]))
-      if (ev.kind === 'room_updated') onRoomChanged()
-      if (ev.kind === 'room_deleted') { onRoomChanged(); location.hash = ''; return }
+      if (ev.kind === 'room_deleted') { location.hash = ''; return }
       if (ev.kind === 'member_joined' || ev.kind === 'member_left' || ev.kind === 'nickname_changed') refreshMembers()
     })
     es.addEventListener('status', (e) => {
@@ -267,7 +292,7 @@ function ChatView({
       }
     }
     return () => es.close()
-  }, [roomId, identity.token, onRoomChanged, refreshMembers])
+  }, [roomId, identity.token, refreshMembers])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })

@@ -3,6 +3,7 @@ import type { ChatEvent } from './types.js'
 type Listener = (ev: ChatEvent) => void
 type StatusListener = (uid: string, thinking: boolean) => void
 type PresenceListener = (uid: string, online: boolean) => void
+type RoomChangeListener = (type: string, data: unknown) => void
 
 /**
  * In-process fan-out for live events plus presence tracking.
@@ -15,6 +16,7 @@ export class Hub {
   private thinking = new Map<string, Set<string>>()           // roomId → Set of thinking uids
   private statusListeners = new Map<string, Set<StatusListener>>() // roomId → listeners
   private presenceListeners = new Map<string, Set<PresenceListener>>() // roomId → listeners
+  private roomChangeListeners = new Set<RoomChangeListener>()
 
   subscribe(roomId: string, fn: Listener): () => void {
     let set = this.listeners.get(roomId)
@@ -91,6 +93,17 @@ export class Hub {
     const result = new Set(this.presence.get(roomId)?.keys() ?? [])
     for (const uid of this.thinking.get(roomId) ?? []) result.add(uid)
     return result
+  }
+
+  subscribeRoomChanges(fn: RoomChangeListener): () => void {
+    this.roomChangeListeners.add(fn)
+    return () => this.roomChangeListeners.delete(fn)
+  }
+
+  broadcastRoomChange(type: string, data: unknown): void {
+    for (const fn of [...this.roomChangeListeners]) {
+      try { fn(type, data) } catch { /* broken subscriber must not break fan-out */ }
+    }
   }
 
   subscribePresence(roomId: string, fn: PresenceListener): () => void {

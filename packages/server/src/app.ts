@@ -110,7 +110,9 @@ export function createApp(deps: AppDeps) {
 
   app.post('/api/rooms', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { title?: string; cwd?: string; machine_id?: string }
-    return c.json(store.createRoom(body.title ?? '', { cwd: body.cwd, machine_id: body.machine_id }), 201)
+    const room = store.createRoom(body.title ?? '', { cwd: body.cwd, machine_id: body.machine_id })
+    hub.broadcastRoomChange('created', room)
+    return c.json(room, 201)
   })
 
   app.get('/api/rooms', (c) => c.json(store.listRooms()))
@@ -121,6 +123,39 @@ export function createApp(deps: AppDeps) {
     const machineId = c.req.query('machine_id') ?? undefined
     const room = store.findRoomByCwd(cwd, machineId)
     return room ? c.json(room) : c.json({ error: 'no room found for this cwd' }, 404)
+  })
+
+  app.get('/api/rooms/stream', (c) => {
+    return streamSSE(c, async (stream) => {
+      // CRITICAL: subscribe BEFORE snapshot (same pattern as per-room SSE)
+      const queue: Array<{ type: string; data: unknown }> = []
+      let wakeup: (() => void) | null = null
+      const unsub = hub.subscribeRoomChanges((type, data) => {
+        queue.push({ type, data })
+        wakeup?.()
+      })
+      stream.onAbort(() => { unsub(); wakeup?.() })
+      // Send snapshot after subscribing — events during snapshot fetch go to queue
+      await stream.writeSSE({ event: 'rooms:snapshot', data: JSON.stringify(store.listRooms()) })
+      while (!stream.aborted) {
+        if (queue.length === 0) {
+          await new Promise<void>((resolve) => {
+            wakeup = resolve
+            setTimeout(resolve, 15_000)  // keepalive aligned with per-room SSE
+          })
+          wakeup = null
+          if (stream.aborted) break
+          if (queue.length === 0) {
+            await stream.writeSSE({ event: 'ping', data: '' })
+            continue
+          }
+        }
+        while (queue.length > 0) {
+          const ev = queue.shift()!
+          await stream.writeSSE({ event: `room:${ev.type}`, data: JSON.stringify(ev.data) })
+        }
+      }
+    })
   })
 
   app.get('/api/rooms/:id', (c) => {
@@ -147,6 +182,7 @@ export function createApp(deps: AppDeps) {
         created_at: new Date().toISOString(),
       },
     ])
+    hub.broadcastRoomChange('deleted', room)
     lastTitledCount.delete(roomId)
     store.deleteRoom(roomId)
     return c.body(null, 204)
@@ -392,6 +428,8 @@ export function createApp(deps: AppDeps) {
         lastTitledCount.set(roomId, count)
         store.setRoomTitle(roomId, title, !lock)
         emit(roomId, store.appendEvent(roomId, { kind: 'room_updated', payload: { title } }))
+        const updatedRoom = store.getRoom(roomId)
+        if (updatedRoom) hub.broadcastRoomChange('updated', updatedRoom)
         console.log(`[title] room=${roomId} milestone=${count} updated to ${JSON.stringify(title)} auto=${!lock}`)
       })
       .catch((err) => console.warn(`[title] room=${roomId} milestone=${count} failed:`, err))
