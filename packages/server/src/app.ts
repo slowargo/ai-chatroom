@@ -459,7 +459,7 @@ export function createApp(deps: AppDeps) {
     const roomId = c.req.param('id')
     const me = c.get('me')
     const after = c.req.query('after') !== undefined ? Number(c.req.query('after')) : me.last_acked_seq
-    const windowMs = Math.min(Number(c.req.query('window_ms') ?? pollWindowMs), 120_000)
+    const windowMs = Math.min(Number(c.req.query('window_ms') ?? pollWindowMs), 1_200_000)
 
     hub.clearThinking(roomId, me.uid)
     const untrack = hub.track(roomId, me.uid)

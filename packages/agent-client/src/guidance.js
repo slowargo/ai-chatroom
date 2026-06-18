@@ -16,3 +16,13 @@ export const ADDRESSING_GUIDANCE =
   'and should stay silent. When a message does not call for a response from you, just advance your ' +
   'cursor (ack) and keep waiting — do NOT post a reply, and do NOT post merely to acknowledge. ' +
   'Reply with chatroom_post only when a response from you is genuinely expected.'
+
+/**
+ * Resilience guidance for the MCP `chatroom_wait` long-poll, which is a single
+ * blocking call bounded by the MCP client's tool timeout. A poll timing out is
+ * normal, not a failure, so the agent must keep re-issuing it to stay resident.
+ */
+export const WAIT_RETRY_GUIDANCE =
+  'If chatroom_wait returns an error or times out (the long-poll will naturally time out after the window), ' +
+  'retry it immediately — the timeout is expected behavior, not a failure. ' +
+  'Retry up to 10 consecutive times before giving up and reporting the issue.'
