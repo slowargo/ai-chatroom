@@ -2,6 +2,31 @@
 
 import { getPasswordForServer } from './config.js'
 
+/**
+ * Combine AbortSignals into one without requiring AbortSignal.any (Node 20.3+):
+ * keeps the floor at the Node version fetch already needs. Aborts as soon as any
+ * input does, propagating its reason.
+ *
+ * Returns a `cleanup` that MUST be called once the request settles. A long-lived
+ * input (the MCP host's `signal`) outlives a single shard, so without cleanup
+ * every block-until-woken poll would leave a never-firing abort listener on it
+ * and leak (MaxListenersExceededWarning + unbounded growth over a resident wait).
+ */
+function combineSignals(signals) {
+  const ac = new AbortController()
+  const cleanups = []
+  for (const s of signals) {
+    if (s.aborted) {
+      ac.abort(s.reason)
+      break
+    }
+    const onAbort = () => ac.abort(s.reason)
+    s.addEventListener('abort', onAbort, { once: true })
+    cleanups.push(() => s.removeEventListener('abort', onAbort))
+  }
+  return { signal: ac.signal, cleanup: () => { for (const fn of cleanups) fn() } }
+}
+
 export class ChatroomClient {
   /** @param {{server: string, token?: string, room_id?: string, password?: string}} opts */
   constructor(opts) {
@@ -11,28 +36,41 @@ export class ChatroomClient {
     this.password = opts.password ?? getPasswordForServer(opts.server)
   }
 
-  async req(method, path, { body, query, timeoutMs, allowStatus } = {}) {
+  async req(method, path, { body, query, timeoutMs, allowStatus, signal } = {}) {
     const url = new URL(this.server + path)
     for (const [k, v] of Object.entries(query ?? {})) {
       if (v !== undefined && v !== null) url.searchParams.set(k, String(v))
     }
-    const res = await fetch(url, {
-      method,
-      headers: {
-        ...(body ? { 'content-type': 'application/json' } : {}),
-        ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
-        ...(this.password ? { 'x-access-password': this.password } : {}),
-      },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok && !(allowStatus && allowStatus.includes(res.status))) {
-      const err = new Error(data.error ?? `HTTP ${res.status}`)
-      err.status = res.status
-      throw err
+    // combine the per-request timeout with an optional external abort (e.g. MCP host cancel)
+    const timeoutSignal = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined
+    let reqSignal = signal ?? timeoutSignal
+    let cleanup
+    if (timeoutSignal && signal) {
+      const combined = combineSignals([timeoutSignal, signal])
+      reqSignal = combined.signal
+      cleanup = combined.cleanup
     }
-    return { status: res.status, data }
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: {
+          ...(body ? { 'content-type': 'application/json' } : {}),
+          ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+          ...(this.password ? { 'x-access-password': this.password } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: reqSignal,
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok && !(allowStatus && allowStatus.includes(res.status))) {
+        const err = new Error(data.error ?? `HTTP ${res.status}`)
+        err.status = res.status
+        throw err
+      }
+      return { status: res.status, data }
+    } finally {
+      cleanup?.()
+    }
   }
 
   listRooms() {
@@ -74,29 +112,54 @@ export class ChatroomClient {
   }
 
   /** One long-poll request; the server returns within ~windowMs either way. */
-  waitOnce(windowMs) {
+  waitOnce(windowMs, signal) {
     return this.req('GET', `/api/rooms/${this.roomId}/wait`, {
       query: { window_ms: windowMs },
       timeoutMs: windowMs + 10_000,
+      signal,
     }).then((r) => r.data)
   }
 
   /**
    * Block until a mention wakes us, retrying through poll timeouts and
    * transient network errors (server restarts). Invisible to the caller.
+   * If an external `signal` aborts (e.g. the MCP host cancels the tool call),
+   * the in-flight /wait is closed via the same signal and this resolves to null
+   * instead of looping — so an abort never leaves an orphaned long-poll behind.
+   * A transport drop (signal not aborted) is retried; only an abort exits.
+   *
+   * `maxConsecutiveRetries` is a backstop for the B+ (signal-bearing) path: if an
+   * abort ever reaches us as a bare transport error without aborting `signal`
+   * (host misbehaviour), the loop would otherwise retry forever. Capping
+   * consecutive failures bounds that worst case. It defaults to Infinity so the
+   * resident CLI path keeps reconnecting through long outages. The counter resets
+   * on any successful poll, so a healthy listener never trips it.
    */
-  async waitForMention({ windowMs = 25_000, onRetry } = {}) {
+  async waitForMention({ windowMs = 25_000, onRetry, signal, maxConsecutiveRetries = Infinity } = {}) {
     let backoffMs = 2000
+    let consecutiveRetries = 0
     for (;;) {
+      if (signal?.aborted) return null
       let res
       try {
-        res = await this.waitOnce(windowMs)
+        res = await this.waitOnce(windowMs, signal)
         backoffMs = 2000
+        consecutiveRetries = 0
       } catch (err) {
+        if (signal?.aborted) return null
         if (err.status === 401 || err.status === 403) throw err
+        if (++consecutiveRetries > maxConsecutiveRetries) return null
         onRetry?.(err)
-        await new Promise((r) => setTimeout(r, backoffMs))
-        backoffMs = Math.min(backoffMs * 2, 30_000)
+        await new Promise((resolve) => {
+          let timer
+          const onAbort = () => { clearTimeout(timer); resolve() }
+          timer = setTimeout(() => {
+            signal?.removeEventListener('abort', onAbort)
+            resolve()
+          }, backoffMs)
+          signal?.addEventListener('abort', onAbort, { once: true })
+        })
+        backoffMs = Math.min(backoffMs * 2, 10_000)
         continue
       }
       if (res.woke) return res

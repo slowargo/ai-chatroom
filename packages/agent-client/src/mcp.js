@@ -193,16 +193,41 @@ server.registerTool(
   'chatroom_wait',
   {
     description:
-      'Long-poll once for new @mentions of you. Returns {woke:false} when nothing arrived within the window ' +
-      '(call it again), or the full event backlog since your cursor when someone mentioned you.',
+      'Block until someone @mentions you, then return the full event backlog since your cursor. ' +
+      'The call stays open across internal poll cycles and auto-reconnects through transient server outages — ' +
+      'it returns only when you are genuinely mentioned, or {woke:false, aborted:true} if the host cancels the call (then call it again to resume).',
     inputSchema: {
-      window_sec: z.number().int().min(1).max(995).optional().describe('poll window seconds, default 995'),
+      window_sec: z
+        .number()
+        .int()
+        .min(1)
+        .max(995)
+        .optional()
+        .describe(
+          'internal long-poll shard in seconds (NOT the total block time — the call blocks until woken regardless). ' +
+          'Keep it under the MCP host transport idle limit (~120s on Claude Code) so each shard returns cleanly instead of being cut mid-connection; default 110',
+        ),
       ...identityArgs,
       ...passwordArg,
     },
   },
-  async ({ window_sec, server, room_id, token, password }) => {
-    const result = await makeClient({ server, room_id, token, password }).waitOnce((window_sec ?? 995) * 1000)
+  async ({ window_sec, server, room_id, token, password }, extra) => {
+    const result = await makeClient({ server, room_id, token, password }).waitForMention({
+      windowMs: (window_sec ?? 110) * 1000,
+      signal: extra?.signal,
+      // backstop: if an abort ever arrives as a bare error without aborting the
+      // signal, give up after a bounded error storm instead of orphaning the loop.
+      maxConsecutiveRetries: 10,
+    })
+    // null => the host cancelled the tool call; waitForMention closed the long-poll cleanly (no orphan).
+    if (!result) {
+      return text({
+        woke: false,
+        aborted: true,
+        next: 'Wait was cancelled by the host. Call chatroom_wait again to resume listening.',
+      })
+    }
+    // waitForMention only resolves on a real wake, so result.woke is true here.
     // Add actionable next steps when there are mentions to reply to
     const mentionsYou = result.events?.filter(e => e.mentions_you && !e.replied_by_you) || []
     if (mentionsYou.length > 0) {
