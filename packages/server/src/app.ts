@@ -110,7 +110,8 @@ export function createApp(deps: AppDeps) {
 
   app.post('/api/rooms', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { title?: string; cwd?: string; machine_id?: string }
-    const room = store.createRoom(body.title ?? '', { cwd: body.cwd, machine_id: body.machine_id })
+    // a fresh room has no events yet; include last_seq so clients can render the count without a refetch
+    const room = { ...store.createRoom(body.title ?? '', { cwd: body.cwd, machine_id: body.machine_id }), last_seq: 0 }
     hub.broadcastRoomChange('created', room)
     return c.json(room, 201)
   })
@@ -427,9 +428,13 @@ export function createApp(deps: AppDeps) {
         }
         lastTitledCount.set(roomId, count)
         store.setRoomTitle(roomId, title, !lock)
-        emit(roomId, store.appendEvent(roomId, { kind: 'room_updated', payload: { title } }))
+        // the latest appended event's seq is the room's last_seq — reuse it so the broadcast carries
+        // the field getRoom() omits (else clients render an "undefined" count)
+        const updateEvents = store.appendEvent(roomId, { kind: 'room_updated', payload: { title } })
+        emit(roomId, updateEvents)
+        const lastSeq = updateEvents[updateEvents.length - 1]?.seq ?? 0
         const updatedRoom = store.getRoom(roomId)
-        if (updatedRoom) hub.broadcastRoomChange('updated', updatedRoom)
+        if (updatedRoom) hub.broadcastRoomChange('updated', { ...updatedRoom, last_seq: lastSeq })
         console.log(`[title] room=${roomId} milestone=${count} updated to ${JSON.stringify(title)} auto=${!lock}`)
       })
       .catch((err) => console.warn(`[title] room=${roomId} milestone=${count} failed:`, err))

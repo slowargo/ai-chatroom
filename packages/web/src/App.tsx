@@ -33,7 +33,8 @@ export default function App() {
     })
     es.addEventListener('room:created', (e) => {
       const room = JSON.parse((e as MessageEvent).data) as Room
-      setRooms(prev => prev.some(r => r.id === room.id) ? prev : [...prev, room])
+      // listRooms orders by created_at DESC, so newest rooms belong at the head
+      setRooms(prev => prev.some(r => r.id === room.id) ? prev : [room, ...prev])
     })
     es.addEventListener('room:deleted', (e) => {
       const { id } = JSON.parse((e as MessageEvent).data) as Room
@@ -64,7 +65,7 @@ export default function App() {
 
   const createRoom = async () => {
     const room = await api.createRoom()
-    setRooms(prev => prev.some(r => r.id === room.id) ? prev : [...prev, room])
+    setRooms(prev => prev.some(r => r.id === room.id) ? prev : [room, ...prev])
     location.hash = room.id
   }
 
