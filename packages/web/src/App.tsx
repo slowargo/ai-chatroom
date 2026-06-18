@@ -14,8 +14,10 @@ import {
   type Room,
 } from './api'
 import { Markdown } from './markdown'
+import { LOCALES, useI18n } from './i18n'
 
 export default function App() {
+  const { t } = useI18n()
   const [rooms, setRooms] = useState<Room[]>([])
   const [roomId, setRoomId] = useState<string | null>(() => location.hash.slice(1) || null)
   const [showPersonas, setShowPersonas] = useState(false)
@@ -69,7 +71,7 @@ export default function App() {
   const deleteRoom = async (e: React.MouseEvent, id: string) => {
     e.preventDefault()
     e.stopPropagation()
-    if (!confirm('确定删除此话题？所有消息将不可恢复。')) return
+    if (!confirm(t('room.confirmDelete'))) return
     try {
       await api.deleteRoom(id)
       localStorage.removeItem(identityKey(id))
@@ -84,18 +86,18 @@ export default function App() {
     <div className="layout">
       <aside className="sidebar">
         <header>
-          <h1>AI Chatroom</h1>
-          <button onClick={createRoom}>+ 新话题</button>
+          <h1>{t('app.title')}</h1>
+          <button onClick={createRoom}>{t('room.new')}</button>
         </header>
         <nav>
           {rooms.map((r) => (
             <a key={r.id} href={`#${r.id}`} className={r.id === roomId ? 'active' : ''}>
-              <span className="room-title" title={r.title || '（未命名话题）'}>
-                {r.title || '（未命名话题）'}
+              <span className="room-title" title={r.title || t('room.unnamed')}>
+                {r.title || t('room.unnamed')}
               </span>
               <span className="room-meta">
-                {r.last_seq} 条
-                <button className="room-delete" onClick={(e) => deleteRoom(e, r.id)} title="删除话题">×</button>
+                {t('room.messageCount', { count: r.last_seq })}
+                <button className="room-delete" onClick={(e) => deleteRoom(e, r.id)} title={t('room.delete')}>×</button>
               </span>
             </a>
           ))}
@@ -103,8 +105,9 @@ export default function App() {
         <footer>
           <LlmStatus />
           <button className="link" onClick={() => setShowPersonas((v) => !v)}>
-            {showPersonas ? '返回聊天' : '人设管理'}
+            {showPersonas ? t('nav.backToChat') : t('nav.personaManagement')}
           </button>
+          <LanguageSwitcher />
           <span className="version">v{version}</span>
         </footer>
       </aside>
@@ -113,13 +116,32 @@ export default function App() {
       ) : roomId ? (
         <ChatRoom key={roomId} roomId={roomId} />
       ) : (
-        <main className="empty">选择或创建一个话题开始讨论</main>
+        <main className="empty">{t('empty.selectOrCreate')}</main>
       )}
     </div>
   )
 }
 
+function LanguageSwitcher() {
+  const { locale, setLocale, t } = useI18n()
+  return (
+    <select
+      className="lang-select"
+      title={t('lang.label')}
+      value={locale}
+      onChange={(e) => setLocale(e.target.value as typeof locale)}
+    >
+      {LOCALES.map((l) => (
+        <option key={l.code} value={l.code}>
+          {l.label}
+        </option>
+      ))}
+    </select>
+  )
+}
+
 function LlmStatus() {
+  const { t } = useI18n()
   const [info, setInfo] = useState<LlmInfo | null>(null)
 
   useEffect(() => {
@@ -127,7 +149,7 @@ function LlmStatus() {
   }, [])
 
   if (!info) return null
-  if (!info.enabled) return <p className="llm-status off">LLM 未配置</p>
+  if (!info.enabled) return <p className="llm-status off">{t('llm.notConfigured')}</p>
 
   const switchModel = async (model: string) => {
     try {
@@ -142,8 +164,8 @@ function LlmStatus() {
   const options = info.model && !info.models.includes(info.model) ? [info.model, ...info.models] : info.models
   return (
     <div className="llm-status">
-      <span className="badge" title="LLM 服务提供商">{info.provider}</span>
-      <select title="用于自动生成房间标题和 Agent 昵称" value={info.model ?? ''} onChange={(e) => switchModel(e.target.value)}>
+      <span className="badge" title={t('llm.providerTitle')}>{info.provider}</span>
+      <select title={t('llm.modelTitle')} value={info.model ?? ''} onChange={(e) => switchModel(e.target.value)}>
         {options.map((m) => (
           <option key={m} value={m}>
             {m}
@@ -163,6 +185,7 @@ function ChatRoom({ roomId }: { roomId: string }) {
 }
 
 function JoinGate({ roomId, onJoined }: { roomId: string; onJoined: (id: Identity) => void }) {
+  const { t } = useI18n()
   const [nickname, setNickname] = useState('')
   const [error, setError] = useState('')
   const join = async () => {
@@ -178,16 +201,16 @@ function JoinGate({ roomId, onJoined }: { roomId: string; onJoined: (id: Identit
   return (
     <main className="empty">
       <div className="join-card">
-        <h2>加入话题</h2>
+        <h2>{t('join.title')}</h2>
         <input
-          placeholder="你的昵称"
+          placeholder={t('join.nicknamePlaceholder')}
           value={nickname}
           onChange={(e) => setNickname(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && nickname.trim() && join()}
           autoFocus
         />
         <button disabled={!nickname.trim()} onClick={join}>
-          加入
+          {t('join.submit')}
         </button>
         {error && <p className="error">{error}</p>}
       </div>
@@ -202,6 +225,7 @@ function ChatView({
   roomId: string
   identity: Identity
 }) {
+  const { t } = useI18n()
   const [events, setEvents] = useState<ChatEvent[]>([])
   const [members, setMembers] = useState<Member[]>([])
   const [pendingJoins, setPendingJoins] = useState<PendingJoin[]>([])
@@ -352,7 +376,7 @@ function ChatView({
           <textarea
             ref={inputRef}
             value={text}
-            placeholder="发消息，@昵称 召唤 agent，Enter 发送 / Shift+Enter 换行"
+            placeholder={t('composer.placeholder')}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
               if (suggestions.length > 0) {
@@ -396,14 +420,14 @@ function ChatView({
             onDone={() => { refreshPendingJoins(); refreshMembers() }}
           />
         )}
-        <h3>成员</h3>
+        <h3>{t('members.title')}</h3>
         {members.map((m) => (
           <div key={m.uid} className="member">
             <span className={`dot ${m.online ? 'online' : graceUids.has(m.uid) ? 'grace' : ''}`} />
             <span className={`nick ${m.type}`}>{m.nickname}</span>
             {m.thinking && <span className="thinking-dots"><span /><span /><span /></span>}
             {m.persona_name && <span className="badge">{m.persona_name}</span>}
-            {m.uid === identity.uid && <span className="badge me">我</span>}
+            {m.uid === identity.uid && <span className="badge me">{t('members.me')}</span>}
           </div>
         ))}
       </aside>
@@ -424,21 +448,24 @@ function EventLine({
   myUid: string
   mentionNames: string[]
 }) {
+  const { t } = useI18n()
   if (ev.kind !== 'message') {
     const label =
-      ev.kind === 'room_updated' ? `话题已命名：${(ev.payload as { title?: string })?.title ?? ''}` : ev.text
+      ev.kind === 'room_updated'
+        ? t('system.roomRenamed', { title: (ev.payload as { title?: string })?.title ?? '' })
+        : ev.text
     return <div className="sysline">{label}</div>
   }
   const sender = ev.sender_uid ? memberByUid.get(ev.sender_uid) : undefined
   const mentioned = ev.mentions.includes(myUid) || ev.mentions.includes('all')
   const replyTarget = ev.in_reply_to ? eventByMsgId.get(ev.in_reply_to) : undefined
-  const replyNick = replyTarget?.sender_uid ? (memberByUid.get(replyTarget.sender_uid)?.nickname ?? '未知用户') : undefined
+  const replyNick = replyTarget?.sender_uid ? (memberByUid.get(replyTarget.sender_uid)?.nickname ?? t('reply.unknownUser')) : undefined
   return (
     <div className={`msg ${sender?.type ?? ''} ${mentioned ? 'mentioned' : ''} ${ev.muted ? 'muted' : ''}`}>
       <div className="msg-head">
         <span className={`nick ${sender?.type ?? ''}`}>{sender?.nickname ?? ev.sender_uid}</span>
         {sender?.persona_name && <span className="badge">{sender.persona_name}</span>}
-        {ev.muted && <span className="badge muted-badge">已熔断</span>}
+        {ev.muted && <span className="badge muted-badge">{t('msg.muted')}</span>}
         <time>{new Date(ev.created_at).toLocaleTimeString()}</time>
       </div>
       {replyTarget && (
@@ -468,6 +495,7 @@ function PendingApprovalPanel({
   members: Member[]
   onDone: () => void
 }) {
+  const { t } = useI18n()
   // Per-request local state: nickname input, selected bind uid, reject reason
   const [nicknames, setNicknames] = useState<Record<string, string>>({})
   const [bindUids, setBindUids] = useState<Record<string, string>>({})
@@ -522,7 +550,7 @@ function PendingApprovalPanel({
 
   return (
     <div className="pending-panel">
-      <h4>待审批加入请求</h4>
+      <h4>{t('pending.title')}</h4>
       {requests.map((req) => {
         const hasExisting = members.some((m) => m.nickname === req.nickname_requested)
         return (
@@ -534,7 +562,7 @@ function PendingApprovalPanel({
             </div>
             {!hasExisting && (
               <div className="pending-actions">
-                <label>新成员</label>
+                <label>{t('pending.newMember')}</label>
                 <input
                   value={nickFor(req)}
                   onChange={(e) =>
@@ -542,19 +570,19 @@ function PendingApprovalPanel({
                   }
                   size={12}
                 />
-                <button onClick={() => approveNew(req)}>批准（新）</button>
+                <button onClick={() => approveNew(req)}>{t('pending.approveNew')}</button>
               </div>
             )}
             {agentMembers.length > 0 && (
               <div className="pending-actions">
-                <label>绑定既有</label>
+                <label>{t('pending.bindExisting')}</label>
                 <select
                   value={bindFor(req)}
                   onChange={(e) =>
                     setBindUids((prev) => ({ ...prev, [req.request_id]: e.target.value }))
                   }
                 >
-                  <option value="">-- 选择成员 --</option>
+                  <option value="">{t('pending.selectMember')}</option>
                   {agentMembers.map((m) => (
                     <option key={m.uid} value={m.uid}>
                       {m.nickname}
@@ -562,13 +590,13 @@ function PendingApprovalPanel({
                   ))}
                 </select>
                 <button disabled={!bindFor(req)} onClick={() => approveBind(req)}>
-                  批准（绑定）
+                  {t('pending.approveBind')}
                 </button>
               </div>
             )}
             <div className="pending-actions">
               <input
-                placeholder="拒绝原因（可选）"
+                placeholder={t('pending.rejectReason')}
                 value={reasons[req.request_id] ?? ''}
                 onChange={(e) =>
                   setReasons((prev) => ({ ...prev, [req.request_id]: e.target.value }))
@@ -576,7 +604,7 @@ function PendingApprovalPanel({
                 size={16}
               />
               <button className="reject" onClick={() => reject(req)}>
-                拒绝
+                {t('pending.reject')}
               </button>
             </div>
             {errors[req.request_id] && <p className="error">{errors[req.request_id]}</p>}
@@ -588,6 +616,7 @@ function PendingApprovalPanel({
 }
 
 function PersonaPanel() {
+  const { t } = useI18n()
   const [personas, setPersonas] = useState<Persona[]>([])
   const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
@@ -612,8 +641,8 @@ function PersonaPanel() {
 
   return (
     <main className="personas">
-      <h2>人设预设</h2>
-      <p className="hint">agent 加入房间时可选择一个人设；人设 id 用于 `chatroom join --persona`。</p>
+      <h2>{t('persona.title')}</h2>
+      <p className="hint">{t('persona.hint')}</p>
       {personas.map((p) => (
         <div key={p.id} className="persona-card">
           <div className="persona-head">
@@ -624,14 +653,14 @@ function PersonaPanel() {
         </div>
       ))}
       <div className="persona-card new">
-        <input placeholder="人设名，如：架构师" value={name} onChange={(e) => setName(e.target.value)} />
+        <input placeholder={t('persona.namePlaceholder')} value={name} onChange={(e) => setName(e.target.value)} />
         <textarea
-          placeholder="system prompt，描述这个角色的视角和说话方式"
+          placeholder={t('persona.promptPlaceholder')}
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
         />
         <button disabled={!name.trim() || !prompt.trim()} onClick={create}>
-          新建人设
+          {t('persona.create')}
         </button>
         {error && <p className="error">{error}</p>}
       </div>
