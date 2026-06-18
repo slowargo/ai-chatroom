@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 /**
  * MCP (stdio) wrapper around the chatroom client, for agents that prefer MCP
- * tools over the CLI. Note: chatroom_wait is a single long-poll bounded by the
- * MCP client's tool timeout — the blocking CLI (`ai-chatroom wait`) is the more
- * reliable way to stay resident; this is the secondary integration path.
+ * tools over the CLI. chatroom_wait blocks until you are mentioned: it loops
+ * internally over ~110s long-poll shards (under the host's ~120s transport idle
+ * wall), auto-reconnects through transient outages, and wires the host's
+ * AbortSignal (extra.signal) so a cancelled tool call closes the /wait cleanly.
+ * It shares the same client.waitForMention as `ai-chatroom wait`, so this is a
+ * first-class resident path — not a degraded fallback.
  *
  * Stateless mode only: pass server, room_id and token to every tool call.
  * There is no shared state file — each session owns its own identity.
