@@ -134,6 +134,22 @@ describe('join & identity', () => {
     expect(again.last_acked_seq).toBe(1)
   })
 
+  it('human re-join by nickname (no token) keeps the existing token so other browsers stay valid', async () => {
+    const roomId = await createRoom()
+    const a = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
+
+    // A second browser of the same person re-enters with the same nickname and no token.
+    const b = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
+    expect(b.rejoined).toBe(true)
+    expect(b.uid).toBe(a.uid)
+    // Token must NOT be rotated, otherwise the first browser's token would be invalidated.
+    expect(b.token).toBe(a.token)
+
+    // The original browser's token still authenticates.
+    const meRes = await api(`/api/rooms/${roomId}/members`, { token: a.token })
+    expect(meRes.status).toBe(200)
+  })
+
   it('generates a fallback nickname when none is given', async () => {
     const roomId = await createRoom()
     const admin = await joinRoom(roomId, { nickname: '_admin', type: 'human' })

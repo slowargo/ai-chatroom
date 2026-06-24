@@ -168,7 +168,12 @@ export class Store {
 
   // ---- participants ----
 
-  /** Rejoin with a token reclaims the original uid and cursor. Pass a different nickname to rename. */
+  /**
+   * Rejoin with a token reclaims the original uid and cursor; pass a different nickname to rename.
+   * Rejoin without a token but with `reclaim` set returns the existing same-nickname identity as-is
+   * (its token is not rotated), so multiple clients sharing a nickname coexist instead of kicking
+   * each other offline.
+   */
   joinRoom(
     roomId: string,
     input: { nickname: string; type: ParticipantType; persona_id?: string | null; token?: string | null; reclaim?: boolean },
@@ -205,9 +210,13 @@ export class Store {
       .get(roomId, input.nickname) as Participant | undefined
     if (existing) {
       if (input.reclaim) {
-        const newToken = randomBytes(24).toString('base64url')
-        this.db.prepare('UPDATE participants SET token = ? WHERE uid = ?').run(newToken, existing.uid)
-        return { participant: { ...existing, token: newToken }, rejoined: true, events: [] }
+        // Reclaim by nickname (no token): return the existing identity as-is rather than rotating
+        // its token. Rotating would invalidate the token already held by another browser/tab of the
+        // same person, kicking it offline (this is the cross-browser "lost access" bug). Returning
+        // the existing token lets multiple clients sharing a nickname coexist. In a trusted
+        // environment the nickname is effectively the identity; stronger guarantees are deferred to
+        // a future login layer.
+        return { participant: existing, rejoined: true, events: [] }
       }
       throw new ConflictError(`nickname "${input.nickname}" is taken in this room`)
     }
