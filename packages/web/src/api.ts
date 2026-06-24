@@ -122,3 +122,21 @@ export function loadIdentity(roomId: string): Identity | null {
 export function saveIdentity(roomId: string, id: Identity) {
   localStorage.setItem(identityKey(roomId), JSON.stringify(id))
 }
+
+const lastNicknameKey = 'chatroom:lastNickname'
+
+export function loadLastNickname(): string {
+  try {
+    return localStorage.getItem(lastNicknameKey) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+export function saveLastNickname(nickname: string) {
+  try {
+    localStorage.setItem(lastNicknameKey, nickname)
+  } catch {
+    // ignore storage failures (e.g. private mode / quota)
+  }
+}

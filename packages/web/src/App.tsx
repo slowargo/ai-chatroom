@@ -4,7 +4,9 @@ import {
   api,
   identityKey,
   loadIdentity,
+  loadLastNickname,
   saveIdentity,
+  saveLastNickname,
   type ChatEvent,
   type Identity,
   type LlmInfo,
@@ -187,13 +189,23 @@ function ChatRoom({ roomId }: { roomId: string }) {
 
 function JoinGate({ roomId, onJoined }: { roomId: string; onJoined: (id: Identity) => void }) {
   const { t } = useI18n()
-  const [nickname, setNickname] = useState('')
+  const [nickname, setNickname] = useState(() => loadLastNickname())
   const [error, setError] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  // Preselect the prefilled nickname so users can edit or confirm it directly.
+  useEffect(() => {
+    const el = inputRef.current
+    if (el && el.value) {
+      el.focus()
+      el.select()
+    }
+  }, [])
   const join = async () => {
     try {
       const joined = await api.join(roomId, { nickname: nickname.trim(), type: 'human' })
       const identity = { uid: joined.uid, token: joined.token, nickname: joined.nickname }
       saveIdentity(roomId, identity)
+      saveLastNickname(joined.nickname)
       onJoined(identity)
     } catch (err) {
       setError((err as Error).message)
@@ -204,11 +216,11 @@ function JoinGate({ roomId, onJoined }: { roomId: string; onJoined: (id: Identit
       <div className="join-card">
         <h2>{t('join.title')}</h2>
         <input
+          ref={inputRef}
           placeholder={t('join.nicknamePlaceholder')}
           value={nickname}
           onChange={(e) => setNickname(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && nickname.trim() && join()}
-          autoFocus
         />
         <button disabled={!nickname.trim()} onClick={join}>
           {t('join.submit')}
