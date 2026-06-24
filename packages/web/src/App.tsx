@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { version } from '../package.json'
 import {
   api,
@@ -234,6 +234,8 @@ function ChatView({
   const [error, setError] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  // caret position to restore after a controlled-value rewrite (mention complete / dismiss)
+  const pendingCaret = useRef<number | null>(null)
   const offlineTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const prevOnlineRef = useRef<Map<string, boolean>>(new Map())
   const [graceUids, setGraceUids] = useState<Set<string>>(new Set())
@@ -335,17 +337,34 @@ function ChatView({
     }
   }
 
-  // mention autocomplete on a trailing "@partial"
-  const mentionMatch = /(?:^|\s)@([^\s@]*)$/.exec(text)
+  // bumped on caret movement so the mention match below re-reads the live caret position
+  const [, bumpCaret] = useState(0)
+  // mention autocomplete on the "@partial" ending at the caret (not just the end of text),
+  // so earlier mentions in "@foo @bar" can be completed too.
+  // NOTE: reading the live DOM caret during render is impure; safe here because we don't use
+  // concurrent rendering / StrictMode double-render, and typing/onSelect always re-render.
+  const caret = inputRef.current?.selectionStart ?? text.length
+  const mentionMatch = /(?:^|\s)@([^\s@]*)$/.exec(text.slice(0, caret))
   const suggestions = mentionMatch
     ? members.filter((m) => m.uid !== identity.uid && m.nickname.startsWith(mentionMatch[1]))
     : []
   const [mentionIdx, setMentionIdx] = useState(0)
   const clampedIdx = Math.min(mentionIdx, Math.max(0, suggestions.length - 1))
+  // restore the caret after a controlled rewrite, before paint, to avoid it jumping to the end
+  useLayoutEffect(() => {
+    if (pendingCaret.current != null) {
+      const pos = pendingCaret.current
+      pendingCaret.current = null
+      inputRef.current?.focus()
+      inputRef.current?.setSelectionRange(pos, pos)
+    }
+  })
   const completeMention = (nickname: string) => {
-    setText(text.slice(0, text.length - mentionMatch![1].length) + nickname + ' ')
+    // keep the leading "@" and prefix; replace only the partial nickname ending at the caret
+    const partialStart = caret - mentionMatch![1].length
+    setText(text.slice(0, partialStart) + nickname + ' ' + text.slice(caret))
+    pendingCaret.current = partialStart + nickname.length + 1
     setMentionIdx(0)
-    inputRef.current?.focus()
   }
 
   return (
@@ -379,6 +398,7 @@ function ChatView({
             value={text}
             placeholder={t('composer.placeholder')}
             onChange={(e) => setText(e.target.value)}
+            onSelect={() => bumpCaret((n) => n + 1)}
             onKeyDown={(e) => {
               if (suggestions.length > 0) {
                 if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
@@ -398,7 +418,10 @@ function ChatView({
                 }
                 if (e.key === 'Escape') {
                   e.preventDefault()
-                  setText(text.slice(0, text.length - mentionMatch![0].length))
+                  // drop the matched "@partial" (incl. its leading prefix) at the caret
+                  setText(text.slice(0, mentionMatch!.index) + text.slice(caret))
+                  pendingCaret.current = mentionMatch!.index
+                  setMentionIdx(0)
                   return
                 }
               }
