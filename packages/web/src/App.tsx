@@ -259,18 +259,20 @@ function ChatView({
     const prev = prevOnlineRef.current
     for (const m of members) {
       const wasOnline = prev.get(m.uid) ?? false
-      if (wasOnline && !m.online && !offlineTimers.current.has(m.uid)) {
+      // treat busy (thinking/waiting) as online for grace-period purposes
+      const effectiveOnline = m.online || m.status !== 'idle'
+      if (wasOnline && !effectiveOnline && !offlineTimers.current.has(m.uid)) {
         setGraceUids(s => new Set(s).add(m.uid))
         offlineTimers.current.set(m.uid, setTimeout(() => {
           offlineTimers.current.delete(m.uid)
           setGraceUids(s => { const n = new Set(s); n.delete(m.uid); return n })
         }, 10_000))
-      } else if (m.online && offlineTimers.current.has(m.uid)) {
+      } else if (effectiveOnline && offlineTimers.current.has(m.uid)) {
         clearTimeout(offlineTimers.current.get(m.uid)!)
         offlineTimers.current.delete(m.uid)
         setGraceUids(s => { const n = new Set(s); n.delete(m.uid); return n })
       }
-      prev.set(m.uid, m.online)
+      prev.set(m.uid, effectiveOnline)
     }
   }, [members])
 
@@ -298,17 +300,17 @@ function ChatView({
       if (ev.kind === 'member_joined' || ev.kind === 'member_left' || ev.kind === 'nickname_changed') refreshMembers()
     })
     es.addEventListener('status', (e) => {
-      const { uid, thinking } = JSON.parse((e as MessageEvent).data) as { uid: string; thinking: boolean }
-      setMembers((prev) => prev.map((m) => m.uid === uid ? { ...m, thinking, online: m.online || thinking } : m))
+      const { uid, status } = JSON.parse((e as MessageEvent).data) as { uid: string; status: 'idle' | 'thinking' | 'waiting_human' }
+      setMembers((prev) => prev.map((m) => m.uid === uid ? { ...m, status, online: m.online || status !== 'idle' } : m))
     })
     es.addEventListener('presence:snapshot', (e) => {
       const { online } = JSON.parse((e as MessageEvent).data) as { online: string[] }
       const onlineSet = new Set(online)
-      setMembers((prev) => prev.map((m) => ({ ...m, online: onlineSet.has(m.uid) || m.thinking })))
+      setMembers((prev) => prev.map((m) => ({ ...m, online: onlineSet.has(m.uid) || m.status !== 'idle' })))
     })
     es.addEventListener('presence', (e) => {
       const { uid, online } = JSON.parse((e as MessageEvent).data) as { uid: string; online: boolean }
-      setMembers((prev) => prev.map((m) => m.uid === uid ? { ...m, online: online || m.thinking } : m))
+      setMembers((prev) => prev.map((m) => m.uid === uid ? { ...m, online: online || m.status !== 'idle' } : m))
     })
     let lastErrorPoll = 0
     es.onerror = () => {
@@ -449,7 +451,8 @@ function ChatView({
           <div key={m.uid} className="member">
             <span className={`dot ${m.online ? 'online' : graceUids.has(m.uid) ? 'grace' : ''}`} />
             <span className={`nick ${m.type}`}>{m.nickname}</span>
-            {m.thinking && <span className="thinking-dots"><span /><span /><span /></span>}
+            {m.status === 'thinking' && <span className="thinking-dots"><span /><span /><span /></span>}
+            {m.status === 'waiting_human' && <span className="waiting-badge">⏸ {t('members.waitingHuman')}</span>}
             {m.persona_name && <span className="badge">{m.persona_name}</span>}
             {m.uid === identity.uid && <span className="badge me">{t('members.me')}</span>}
           </div>

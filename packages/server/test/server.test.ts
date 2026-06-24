@@ -510,6 +510,113 @@ describe('room resolve by cwd', () => {
   })
 })
 
+// ---- waiting_human status ----
+
+describe('waiting_human status', () => {
+  async function ack(roomId: string, token: string, seq: number) {
+    return json(
+      await api(`/api/rooms/${roomId}/ack`, { method: 'POST', token, body: JSON.stringify({ seq }) }),
+    )
+  }
+
+  it('(a) agent ack → status "thinking" in /members', async () => {
+    const roomId = await createRoom()
+    const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
+    const bot = await joinAgent(roomId, { nickname: 'bot' }, alice.token)
+    const m = await post(roomId, alice.token, '@bot hello')
+    await ack(roomId, bot.token, m.seq)
+    const members = await json<any[]>(await api(`/api/rooms/${roomId}/members`, { token: bot.token }))
+    const botMember = members.find((x: any) => x.uid === bot.uid)
+    expect(botMember?.status).toBe('thinking')
+  })
+
+  it('(b) POST /status waiting_human → status "waiting_human" in /members', async () => {
+    const roomId = await createRoom()
+    const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
+    const bot = await joinAgent(roomId, { nickname: 'bot' }, alice.token)
+    const res = await api(`/api/rooms/${roomId}/status`, {
+      method: 'POST',
+      token: bot.token,
+      body: JSON.stringify({ status: 'waiting_human' }),
+    })
+    expect(res.status).toBe(200)
+    const members = await json<any[]>(await api(`/api/rooms/${roomId}/members`, { token: bot.token }))
+    const botMember = members.find((x: any) => x.uid === bot.uid)
+    expect(botMember?.status).toBe('waiting_human')
+  })
+
+  it('(c) subsequent ack does NOT clobber waiting_human', async () => {
+    const roomId = await createRoom()
+    const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
+    const bot = await joinAgent(roomId, { nickname: 'bot' }, alice.token)
+    // first set waiting_human
+    await api(`/api/rooms/${roomId}/status`, {
+      method: 'POST',
+      token: bot.token,
+      body: JSON.stringify({ status: 'waiting_human' }),
+    })
+    // then ack — must not clobber waiting_human
+    const m = await post(roomId, alice.token, '@bot ping')
+    await ack(roomId, bot.token, m.seq)
+    const members = await json<any[]>(await api(`/api/rooms/${roomId}/members`, { token: bot.token }))
+    const botMember = members.find((x: any) => x.uid === bot.uid)
+    expect(botMember?.status).toBe('waiting_human')
+  })
+
+  it('(d) /wait entry resets status to "idle"', async () => {
+    const roomId = await createRoom()
+    const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
+    const bot = await joinAgent(roomId, { nickname: 'bot' }, alice.token)
+    await api(`/api/rooms/${roomId}/status`, {
+      method: 'POST',
+      token: bot.token,
+      body: JSON.stringify({ status: 'waiting_human' }),
+    })
+    // /wait entry clears thinking + waiting
+    await wait(roomId, bot.token, 50)
+    const members = await json<any[]>(await api(`/api/rooms/${roomId}/members`, { token: bot.token }))
+    const botMember = members.find((x: any) => x.uid === bot.uid)
+    expect(botMember?.status).toBe('idle')
+  })
+
+  it('(e) waiting_human implies online in /members', async () => {
+    const roomId = await createRoom()
+    const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
+    const bot = await joinAgent(roomId, { nickname: 'bot' }, alice.token)
+    await api(`/api/rooms/${roomId}/status`, {
+      method: 'POST',
+      token: bot.token,
+      body: JSON.stringify({ status: 'waiting_human' }),
+    })
+    const members = await json<any[]>(await api(`/api/rooms/${roomId}/members`, { token: bot.token }))
+    const botMember = members.find((x: any) => x.uid === bot.uid)
+    expect(botMember?.online).toBe(true)
+  })
+
+  it('rejects /status from a human member with 403', async () => {
+    const roomId = await createRoom()
+    const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
+    const res = await api(`/api/rooms/${roomId}/status`, {
+      method: 'POST',
+      token: alice.token,
+      body: JSON.stringify({ status: 'waiting_human' }),
+    })
+    expect(res.status).toBe(403)
+  })
+
+  it('rejects unknown status values with 400', async () => {
+    const roomId = await createRoom()
+    const alice = await joinRoom(roomId, { nickname: 'alice', type: 'human' })
+    const bot = await joinAgent(roomId, { nickname: 'bot' }, alice.token)
+    const res = await api(`/api/rooms/${roomId}/status`, {
+      method: 'POST',
+      token: bot.token,
+      body: JSON.stringify({ status: 'active' }),
+    })
+    expect(res.status).toBe(400)
+  })
+})
+
 // ---- access password ----
 
 describe('access password', () => {

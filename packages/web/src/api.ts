@@ -20,7 +20,7 @@ export interface Member {
   type: 'human' | 'agent'
   persona_name: string | null
   online: boolean
-  thinking: boolean
+  status: 'idle' | 'thinking' | 'waiting_human'
 }
 
 export interface ChatEvent {

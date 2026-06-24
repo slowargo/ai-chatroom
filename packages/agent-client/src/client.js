@@ -176,6 +176,10 @@ export class ChatroomClient {
     return this.req('POST', `/api/rooms/${this.roomId}/ack`, { body: { seq } }).then((r) => r.data)
   }
 
+  setStatus(status) {
+    return this.req('POST', `/api/rooms/${this.roomId}/status`, { body: { status } }).then((r) => r.data)
+  }
+
   history({ after = 0, limit = 200 } = {}) {
     return this.req('GET', `/api/rooms/${this.roomId}/events`, { query: { after, limit } }).then((r) => r.data)
   }

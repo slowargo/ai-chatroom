@@ -284,4 +284,24 @@ server.registerTool(
     text(await makeClient({ server, room_id, token, password }).members()),
 )
 
+server.registerTool(
+  'chatroom_set_status',
+  {
+    description:
+      'Signal a transient status to the chatroom server. ' +
+      'Call with status="waiting_human" before pausing to ask your local human operator a question. ' +
+      'This shows a distinct badge to other participants so they know you are paused, not actively working. ' +
+      'The status is cleared automatically when you next call chatroom_wait.',
+    inputSchema: {
+      status: z.enum(['waiting_human']).describe(
+        'The status to signal. Only "waiting_human" is accepted: use it to indicate you are pausing to ask your local human operator. Cleared automatically on the next chatroom_wait.',
+      ),
+      ...identityArgs,
+      ...passwordArg,
+    },
+  },
+  async ({ status, server, room_id, token, password }) =>
+    text(await makeClient({ server, room_id, token, password }).setStatus(status)),
+)
+
 await server.connect(new StdioServerTransport())

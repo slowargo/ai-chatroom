@@ -354,8 +354,8 @@ export function createApp(deps: AppDeps) {
     return c.json(
       store.listParticipants(roomId).map((p) => ({
         ...publicParticipant(p),
-        online: online.has(p.uid) || hub.isThinking(roomId, p.uid),
-        thinking: hub.isThinking(roomId, p.uid),
+        online: online.has(p.uid) || hub.isBusy(roomId, p.uid),
+        status: hub.statusOf(roomId, p.uid),
         persona_name: p.persona_id ? store.getPersona(p.persona_id)?.name ?? null : null,
       })),
     )
@@ -458,6 +458,16 @@ export function createApp(deps: AppDeps) {
     return c.json({ last_acked_seq: result })
   })
 
+  app.post('/api/rooms/:id/status', auth, async (c) => {
+    const roomId = c.req.param('id')
+    const me = c.get('me')
+    if (me.type !== 'agent') return c.json({ error: 'agent access required' }, 403)
+    const body = (await c.req.json().catch(() => ({}))) as { status?: string }
+    if (body.status !== 'waiting_human') return c.json({ error: 'invalid status: only "waiting_human" is accepted' }, 400)
+    hub.setWaiting(roomId, me.uid)
+    return c.json({ ok: true })
+  })
+
   // ---- agent long-poll ----
 
   app.get('/api/rooms/:id/wait', auth, async (c) => {
@@ -506,9 +516,9 @@ export function createApp(deps: AppDeps) {
         queue.push(ev)
         wakeup?.()
       })
-      const statusQueue: Array<{uid: string, thinking: boolean}> = []
-      const unsubStatus = hub.subscribeStatus(roomId, (uid, thinking) => {
-        statusQueue.push({ uid, thinking })
+      const statusQueue: Array<{uid: string, status: 'idle' | 'thinking' | 'waiting_human'}> = []
+      const unsubStatus = hub.subscribeStatus(roomId, (uid, status) => {
+        statusQueue.push({ uid, status })
         wakeup?.()
       })
       const presenceQueue: Array<{uid: string, online: boolean}> = []
@@ -554,7 +564,7 @@ export function createApp(deps: AppDeps) {
         }
         while (statusQueue.length > 0) {
           const s = statusQueue.shift()!
-          await stream.writeSSE({ event: 'status', data: JSON.stringify(s) })
+          await stream.writeSSE({ event: 'status', data: JSON.stringify({ uid: s.uid, status: s.status }) })
         }
         while (presenceQueue.length > 0) {
           const p = presenceQueue.shift()!
