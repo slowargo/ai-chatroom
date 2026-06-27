@@ -59,6 +59,17 @@ export interface PendingJoin {
   reason?: string
 }
 
+/** A verified owner session (row from the sessions table) */
+export interface OwnerSession {
+  /** Discriminant for the `Participant | OwnerSession` union (Participant has no `kind`). */
+  kind: 'session'
+  id: string
+  token: string
+  created_at: string
+  last_used_at: string
+  label: string
+}
+
 /** ChatEvent plus per-viewer annotations added when listing a backlog */
 export interface AnnotatedEvent extends ChatEvent {
   /** true when this event mentions the viewer and the viewer already replied to it */

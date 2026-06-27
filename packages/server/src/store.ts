@@ -5,6 +5,7 @@ import type {
   AnnotatedEvent,
   ChatEvent,
   EventKind,
+  OwnerSession,
   Participant,
   ParticipantType,
   PendingJoin,
@@ -539,5 +540,45 @@ export class Store {
     pj.reason = reason
     this.pendingJoins.set(requestId, pj)
     return pj
+  }
+
+  // ---- owner sessions ----
+
+  /** Create a new owner session with a fresh token. Token uses same format as participant tokens. */
+  createSession(label = ''): OwnerSession {
+    const session: OwnerSession = {
+      kind: 'session',
+      id: ulid(),
+      token: randomBytes(24).toString('base64url'),
+      created_at: this.now(),
+      last_used_at: this.now(),
+      label,
+    }
+    this.db
+      .prepare('INSERT INTO sessions (id, token, created_at, last_used_at, label) VALUES (?, ?, ?, ?, ?)')
+      .run(session.id, session.token, session.created_at, session.last_used_at, session.label)
+    return session
+  }
+
+  /** Look up a session by its token. Returns undefined if not found. */
+  getSessionByToken(token: string): OwnerSession | undefined {
+    // `kind` is not a stored column; add it so the returned object carries the union discriminant.
+    const row = this.db.prepare('SELECT * FROM sessions WHERE token = ?').get(token) as Omit<OwnerSession, 'kind'> | undefined
+    return row ? { kind: 'session', ...row } : undefined
+  }
+
+  /** Update last_used_at for a session. */
+  touchSession(id: string): void {
+    this.db.prepare('UPDATE sessions SET last_used_at = ? WHERE id = ?').run(this.now(), id)
+  }
+
+  /** Delete a single session (logout). */
+  deleteSession(id: string): void {
+    this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
+  }
+
+  /** Delete all sessions (logout-all). */
+  deleteAllSessions(): void {
+    this.db.prepare('DELETE FROM sessions').run()
   }
 }

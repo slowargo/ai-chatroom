@@ -45,6 +45,14 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_events_reply ON events(room_id, in_reply_to);
 CREATE INDEX IF NOT EXISTS idx_events_sender ON events(room_id, sender_uid);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id          TEXT PRIMARY KEY,
+  token       TEXT NOT NULL UNIQUE,
+  created_at  TEXT NOT NULL,
+  last_used_at TEXT NOT NULL,
+  label       TEXT NOT NULL DEFAULT ''
+);
 `
 
 export function openDb(path: string): Database.Database {

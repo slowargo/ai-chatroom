@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { createApp } from '../src/app.js'
+import { checkSecureBind, hashOwnerPassword, verifyOwnerPassword } from '../src/config.js'
 import { openDb } from '../src/db.js'
 import { Hub } from '../src/hub.js'
 import { Llm } from '../src/llm.js'
@@ -673,13 +674,358 @@ describe('access password', () => {
     expect(res.status).toBe(200)
   })
 
-  it('accepts password via query param', async () => {
+  it('no longer accepts password via query param (removed per P0a design)', async () => {
+    // ?password= query support was removed; only x-access-password header is accepted
     const res = await papi('/api/rooms?password=test-secret')
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(401)
   })
 
   it('rejects password via query param when wrong', async () => {
     const res = await papi('/api/rooms?password=wrong')
     expect(res.status).toBe(401)
+  })
+})
+
+// ---- owner auth: login / logout / ownerOnly middleware ----
+
+describe('owner auth — login / logout / ownerOnly', () => {
+  const OWNER_PW = 'super-secret-pw'
+  let ownerStore: Store
+  let ownerApp: App
+  let ownerHash: string
+
+  beforeAll(async () => {
+    // hash once for the whole suite (scrypt is intentionally slow)
+    ownerHash = await hashOwnerPassword(OWNER_PW)
+  })
+
+  beforeEach(() => {
+    ownerStore = new Store(openDb(':memory:'), { brakeAfter: 3 })
+    ownerApp = createApp({
+      store: ownerStore,
+      hub: new Hub(),
+      llm: new Llm(),
+      pollWindowMs: 100,
+      ownerPasswordHash: ownerHash,
+    })
+  })
+
+  async function oapi(path: string, init?: RequestInit & { token?: string }): Promise<Response> {
+    const headers = new Headers(init?.headers)
+    if (init?.body) headers.set('content-type', 'application/json')
+    if (init?.token) headers.set('authorization', `Bearer ${init.token}`)
+    return ownerApp.request(path, { ...init, headers })
+  }
+
+  async function login(password: string) {
+    return oapi('/api/auth/login', { method: 'POST', body: JSON.stringify({ password }) })
+  }
+
+  // ---- login ----
+
+  it('login with correct password returns session_token', async () => {
+    const res = await login(OWNER_PW)
+    expect(res.status).toBe(201)
+    const body = await res.json() as any
+    expect(typeof body.session_token).toBe('string')
+    expect(body.session_token.length).toBeGreaterThan(10)
+  })
+
+  it('login with wrong password returns 401', async () => {
+    const res = await login('wrong-password')
+    expect(res.status).toBe(401)
+  })
+
+  it('login returns 400 when owner password is not configured', async () => {
+    const localApp = createApp({
+      store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
+      hub: new Hub(),
+      llm: new Llm(),
+      pollWindowMs: 100,
+      // ownerPasswordHash intentionally omitted → local mode
+    })
+    const res = await localApp.request('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'anything' }),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  // ---- ownerOnly with password set: only session tokens pass ----
+
+  it('ownerOnly with password set: valid session token passes POST /api/rooms', async () => {
+    const { session_token } = await login(OWNER_PW).then((r) => r.json()) as any
+    const res = await oapi('/api/rooms', { method: 'POST', body: '{}', token: session_token })
+    expect(res.status).toBe(201)
+  })
+
+  it('ownerOnly with password set: participant token is rejected (red-line)', async () => {
+    // Get a session token to create a room, then join to get a participant token
+    const { session_token } = await login(OWNER_PW).then((r) => r.json()) as any
+    const room = await oapi('/api/rooms', { method: 'POST', body: '{}', token: session_token })
+      .then((r) => r.json()) as any
+    const joined = await oapi(`/api/rooms/${room.id}/join`, {
+      method: 'POST',
+      body: JSON.stringify({ nickname: 'alice', type: 'human' }),
+    }).then((r) => r.json()) as any
+
+    // participant token must NOT pass ownerOnly when password is set
+    const res = await oapi('/api/rooms', { method: 'POST', body: '{}', token: joined.token })
+    expect(res.status).toBe(403)
+  })
+
+  it('ownerOnly with password set: no token returns 401', async () => {
+    const res = await oapi('/api/rooms', { method: 'POST', body: '{}' })
+    expect(res.status).toBe(401)
+  })
+
+  // ---- logout ----
+
+  it('logout invalidates the session token', async () => {
+    const { session_token } = await login(OWNER_PW).then((r) => r.json()) as any
+
+    // Token works before logout
+    const before = await oapi('/api/rooms', { method: 'POST', body: '{}', token: session_token })
+    expect(before.status).toBe(201)
+
+    // Logout
+    const logoutRes = await oapi('/api/auth/logout', { method: 'POST', token: session_token })
+    expect(logoutRes.status).toBe(200)
+
+    // Token rejected after logout
+    const after = await oapi('/api/rooms', { method: 'POST', body: '{}', token: session_token })
+    expect(after.status).toBe(403)
+  })
+
+  // ---- logout-all ----
+
+  it('logout-all invalidates all sessions', async () => {
+    const { session_token: t1 } = await login(OWNER_PW).then((r) => r.json()) as any
+    const { session_token: t2 } = await login(OWNER_PW).then((r) => r.json()) as any
+
+    // Both tokens work
+    expect((await oapi('/api/rooms', { method: 'POST', body: '{}', token: t1 })).status).toBe(201)
+    expect((await oapi('/api/rooms', { method: 'POST', body: '{}', token: t2 })).status).toBe(201)
+
+    // logout-all using t1
+    const logoutAllRes = await oapi('/api/auth/logout-all', { method: 'POST', token: t1 })
+    expect(logoutAllRes.status).toBe(200)
+
+    // Both tokens are now invalid
+    expect((await oapi('/api/rooms', { method: 'POST', body: '{}', token: t1 })).status).toBe(403)
+    expect((await oapi('/api/rooms', { method: 'POST', body: '{}', token: t2 })).status).toBe(403)
+  })
+
+  // ---- local mode (no password) ----
+
+  it('local mode: no token still allowed on management routes (zero-config backward compat)', async () => {
+    const localApp = createApp({
+      store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
+      hub: new Hub(),
+      llm: new Llm(),
+      pollWindowMs: 100,
+    })
+    const res = await localApp.request('/api/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(201)
+  })
+
+  it('local mode: human participant token passes ownerOnly', async () => {
+    const localApp = createApp({
+      store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
+      hub: new Hub(),
+      llm: new Llm(),
+      pollWindowMs: 100,
+    })
+    // Create a room (no token, local mode)
+    const room = await (await localApp.request('/api/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })).json() as any
+
+    // Join as human to get a participant token
+    const joined = await (await localApp.request(`/api/rooms/${room.id}/join`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ nickname: 'alice', type: 'human' }),
+    })).json() as any
+
+    // Human participant token passes ownerOnly in local mode (approve pending join)
+    const pendingRes = await localApp.request(`/api/rooms/${room.id}/join`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'agent', nickname: 'bot' }),
+    })
+    const { request_id } = await pendingRes.json() as any
+
+    const approveRes = await localApp.request(`/api/rooms/${room.id}/pending-joins/${request_id}/approve`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${joined.token}`,
+      },
+      body: JSON.stringify({ action: 'new' }),
+    })
+    expect(approveRes.status).toBe(200)
+  })
+
+  it('local mode: agent participant token is rejected by ownerOnly', async () => {
+    const localApp = createApp({
+      store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
+      hub: new Hub(),
+      llm: new Llm(),
+      pollWindowMs: 100,
+    })
+    const room = await (await localApp.request('/api/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })).json() as any
+
+    // Join as human to approve an agent
+    const human = await (await localApp.request(`/api/rooms/${room.id}/join`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ nickname: 'alice', type: 'human' }),
+    })).json() as any
+
+    // Get an agent token via approval
+    const pending = await (await localApp.request(`/api/rooms/${room.id}/join`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'agent', nickname: 'bot' }),
+    })).json() as any
+
+    const approved = await (await localApp.request(`/api/rooms/${room.id}/pending-joins/${pending.request_id}/approve`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${human.token}`,
+      },
+      body: JSON.stringify({ action: 'new' }),
+    })).json() as any
+
+    // Agent token must NOT pass ownerOnly even in local mode
+    const res = await localApp.request('/api/rooms', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${approved.token}`,
+      },
+      body: '{}',
+    })
+    expect(res.status).toBe(403)
+  })
+
+  // ---- access password + ownerOnly: x-access-password header, not query ----
+
+  it('access password gate: header works, ?password= query does not', async () => {
+    const gatedApp = createApp({
+      store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
+      hub: new Hub(),
+      llm: new Llm(),
+      pollWindowMs: 100,
+      accessPassword: 'gate-pw',
+    })
+    // header path works
+    const okRes = await gatedApp.request('/api/rooms', {
+      headers: { 'x-access-password': 'gate-pw' },
+    })
+    expect(okRes.status).toBe(200)
+
+    // ?password= query is no longer accepted
+    const qRes = await gatedApp.request('/api/rooms?password=gate-pw')
+    expect(qRes.status).toBe(401)
+  })
+
+  // ---- global rooms/stream is gated when access password is set ----
+
+  it('global /api/rooms/stream is disabled when access password is set', async () => {
+    const gatedApp = createApp({
+      store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
+      hub: new Hub(),
+      llm: new Llm(),
+      pollWindowMs: 100,
+      accessPassword: 'gate-pw',
+    })
+    const res = await gatedApp.request('/api/rooms/stream', {
+      headers: { 'x-access-password': 'gate-pw' },
+    })
+    expect(res.status).toBe(403)
+  })
+})
+
+// ---- P0b · hardening ----
+
+describe('P0b — owner password hashing (async)', () => {
+  it('hashOwnerPassword + verifyOwnerPassword round-trips correctly', async () => {
+    const hash = await hashOwnerPassword('correct horse battery staple')
+    expect(hash).toMatch(/^[0-9a-f]+:[0-9a-f]+$/)
+    expect(await verifyOwnerPassword('correct horse battery staple', hash)).toBe(true)
+    expect(await verifyOwnerPassword('wrong password', hash)).toBe(false)
+  })
+
+  it('verifyOwnerPassword returns false for malformed stored hashes', async () => {
+    expect(await verifyOwnerPassword('x', '')).toBe(false)
+    expect(await verifyOwnerPassword('x', 'no-colon-here')).toBe(false)
+    expect(await verifyOwnerPassword('x', 'salt:')).toBe(false)
+  })
+
+  it('a config-stored (pre-computed) hash can authenticate login', async () => {
+    // Simulate the "pre-stored hash" path: hash is computed offline and passed as ownerPasswordHash.
+    const preStored = await hashOwnerPassword('stored-pw')
+    const app = createApp({
+      store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
+      hub: new Hub(),
+      llm: new Llm(),
+      pollWindowMs: 100,
+      ownerPasswordHash: preStored,
+    })
+    const res = await app.request('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'stored-pw' }),
+    })
+    expect(res.status).toBe(201)
+    const body = await res.json() as any
+    expect(typeof body.session_token).toBe('string')
+  })
+})
+
+describe('P0b — default-deny secure bind (checkSecureBind)', () => {
+  it('allows loopback host with no auth', () => {
+    expect(checkSecureBind({ host: '127.0.0.1', accessPassword: null, ownerPasswordHash: null })).toBeNull()
+    expect(checkSecureBind({ host: 'localhost', accessPassword: null, ownerPasswordHash: null })).toBeNull()
+    expect(checkSecureBind({ host: '::1', accessPassword: null, ownerPasswordHash: null })).toBeNull()
+  })
+
+  it('refuses non-loopback host with no auth', () => {
+    const err = checkSecureBind({ host: '0.0.0.0', accessPassword: null, ownerPasswordHash: null })
+    expect(err).toBeTruthy()
+    expect(err).toContain('Refusing to start')
+  })
+
+  it('allows non-loopback host when an access password is set', () => {
+    expect(checkSecureBind({ host: '0.0.0.0', accessPassword: 'pw', ownerPasswordHash: null })).toBeNull()
+  })
+
+  it('allows non-loopback host when an owner password is set', () => {
+    expect(checkSecureBind({ host: '0.0.0.0', accessPassword: null, ownerPasswordHash: 'salt:hash' })).toBeNull()
+  })
+
+  it('allows non-loopback host with no auth when explicitly overridden', () => {
+    expect(
+      checkSecureBind({ host: '0.0.0.0', accessPassword: null, ownerPasswordHash: null, allowInsecure: true }),
+    ).toBeNull()
+  })
+
+  it('refuses a concrete public-looking address with no auth', () => {
+    const err = checkSecureBind({ host: '192.168.1.50', accessPassword: null, ownerPasswordHash: null })
+    expect(err).toBeTruthy()
   })
 })

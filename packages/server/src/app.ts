@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { createMiddleware } from 'hono/factory'
 import { streamSSE } from 'hono/streaming'
 import { createHash, timingSafeEqual } from 'node:crypto'
@@ -7,7 +8,8 @@ import { extname, join, normalize } from 'node:path'
 import type { Hub } from './hub.js'
 import type { Llm } from './llm.js'
 import { ConflictError, ValidationError, type Store } from './store.js'
-import type { ChatEvent, Participant, ParticipantType } from './types.js'
+import type { ChatEvent, OwnerSession, Participant, ParticipantType } from './types.js'
+import { verifyOwnerPassword } from './config.js'
 
 /** Resolve callbacks waiting for a pending join decision, keyed by request_id */
 const pendingJoinWaiters = new Map<string, ((result: unknown) => void)[]>()
@@ -20,11 +22,68 @@ export interface AppDeps {
   pollWindowMs?: number
   /** absolute path of the built web UI; omit to disable static serving */
   webDist?: string
-  /** if set, all /api/* routes require this password via x-access-password header or ?password= query param */
+  /**
+   * if set, /api/* routes require this password via x-access-password header, with two exceptions:
+   * room-scoped SSE (/api/rooms/:id/stream) accepts a valid ?token= instead (EventSource cannot set
+   * headers), and the global /api/rooms/stream is disabled (403) since it has no token to validate.
+   */
   accessPassword?: string | null
+  /** scrypt hash of the owner password ("salt:hash" hex). If absent, local mode: any human participant token is owner. */
+  ownerPasswordHash?: string | null
 }
 
-type Env = { Variables: { me: Participant } }
+type Env = { Variables: { me: Participant | OwnerSession } }
+
+// ---- in-process rate limiter for login endpoint ----
+interface RateLimitEntry {
+  fails: number
+  lockedUntil: number
+}
+const loginRateMap = new Map<string, RateLimitEntry>()
+const RATE_MAP_MAX = 5000
+
+function getRateLimitEntry(ip: string): RateLimitEntry {
+  return loginRateMap.get(ip) ?? { fails: 0, lockedUntil: 0 }
+}
+
+function recordLoginFailure(ip: string): void {
+  // Evict oldest entry if at capacity
+  if (!loginRateMap.has(ip) && loginRateMap.size >= RATE_MAP_MAX) {
+    const oldest = loginRateMap.keys().next().value
+    if (oldest) loginRateMap.delete(oldest)
+  }
+  const entry = getRateLimitEntry(ip)
+  entry.fails++
+  // First 3 failures are lenient (no lockout); from 4th: 2^(fails-3) seconds, capped at 300s
+  const delaySec = entry.fails > 3 ? Math.min(Math.pow(2, entry.fails - 3), 300) : 0
+  entry.lockedUntil = delaySec > 0 ? Date.now() + delaySec * 1000 : 0
+  loginRateMap.set(ip, entry)
+}
+
+function clearRateLimitEntry(ip: string): void {
+  loginRateMap.delete(ip)
+}
+
+/** Normalize an address so IPv4 and its IPv4-mapped IPv6 form share one rate-limit bucket. */
+function normalizeIp(ip: string): string {
+  const h = ip.trim().toLowerCase()
+  return h.startsWith('::ffff:') ? h.slice('::ffff:'.length) : h
+}
+
+function getClientIp(c: Context): string {
+  // Behind a reverse proxy, the real client IP is in X-Forwarded-For; only trust it
+  // when TRUST_PROXY is explicitly set (otherwise a client could spoof the header to
+  // dodge per-IP rate limiting).
+  if (process.env.TRUST_PROXY) {
+    const fwd = c.req.header('x-forwarded-for')
+    if (fwd) return normalizeIp(fwd.split(',')[0]!)
+  }
+  // Default: the socket remote address from @hono/node-server's IncomingMessage.
+  // c.env.incoming is the Node http.IncomingMessage; its socket carries the peer address.
+  const incoming = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming
+  const addr = incoming?.socket?.remoteAddress
+  return addr ? normalizeIp(addr) : 'unknown'
+}
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -59,6 +118,7 @@ function fallbackTitle(messages: Array<{ text: string }>): string {
 export function createApp(deps: AppDeps) {
   const { store, hub, llm } = deps
   const pollWindowMs = deps.pollWindowMs ?? 25_000
+  const ownerPasswordHash = deps.ownerPasswordHash ?? null
   const app = new Hono<Env>()
 
   const emit = (roomId: string, events: ChatEvent[]) => {
@@ -74,7 +134,21 @@ export function createApp(deps: AppDeps) {
     const hash = (s: string) => createHash('sha256').update(s).digest()
     const pwHash = hash(deps.accessPassword)
     app.use('/api/*', async (c, next) => {
-      const pw = c.req.header('x-access-password') ?? c.req.query('password') ?? ''
+      // SSE endpoints cannot set headers (EventSource limitation), so allow ?token= to bypass
+      // the access password check for room-scoped SSE only. The token must be a valid participant token.
+      const path = c.req.path
+      if (path.match(/^\/api\/rooms\/[^/]+\/stream$/)) {
+        const token = c.req.query('token')
+        if (token && store.getParticipantByToken(token)) {
+          await next()
+          return
+        }
+      }
+      // Global rooms stream: disabled when access password is set (no safe way to authenticate EventSource)
+      if (path === '/api/rooms/stream') {
+        return c.json({ error: 'global room stream is disabled when access password is set; use poll /api/rooms instead' }, 403)
+      }
+      const pw = c.req.header('x-access-password') ?? ''
       if (!timingSafeEqual(hash(pw), pwHash)) return c.json({ error: 'access password required' }, 401)
       await next()
     })
@@ -92,11 +166,51 @@ export function createApp(deps: AppDeps) {
     await next()
   })
 
-  /** Admin-only middleware: requires auth middleware to have run first, then checks type=human */
-  const adminOnly = createMiddleware<Env>(async (c, next) => {
-    const me = c.get('me')
-    if (me.type !== 'human') return c.json({ error: 'admin access required' }, 403)
-    await next()
+  /**
+   * ownerOnly middleware (self-contained, method X per design).
+   * Does NOT depend on the auth middleware. Replaces auth+adminOnly on management routes.
+   *
+   * Path is decided solely by startup config (ownerPasswordHash), never by request fields:
+   *   - ownerPasswordHash set  → look up sessions table; hit → pass; else → 403
+   *   - ownerPasswordHash null → local mode (zero-config):
+   *       if token provided: must be a valid human participant token → pass; else 403
+   *       if no token: pass unconditionally (local = fully trusted, no credentials required)
+   *
+   * Red line: when ownerPasswordHash is set, NO participant token may pass ownerOnly.
+   */
+  const ownerOnly = createMiddleware<Env>(async (c, next) => {
+    // ownerOnly routes are regular HTTP (never SSE), so the token comes from the Authorization
+    // header only — no ?token= query fallback (which would leak tokens into proxy logs / history).
+    const token = c.req.header('authorization')?.replace(/^Bearer\s+/i, '')
+
+    if (ownerPasswordHash) {
+      // Password mode: a valid session token is required
+      if (!token) return c.json({ error: 'owner session token required' }, 401)
+      const session = store.getSessionByToken(token)
+      if (!session) return c.json({ error: 'owner session required' }, 403)
+      // Update last_used_at
+      store.touchSession(session.id)
+      c.set('me', session)
+      await next()
+    } else {
+      // Local mode (zero-config): no owner password set means fully trusted.
+      // If a token is provided, validate it as a human participant token to set 'me'.
+      // If no token is provided, allow through unconditionally (backwards-compatible local behavior).
+      //
+      // TRUST-MODEL NOTE: in local mode the management/approval routes accept a request with no
+      // token at all. This is an ACCEPTED trade-off, not a gap: local mode is defined as a fully
+      // trusted, single-operator environment (loopback bind, no public exposure). Hardening for
+      // untrusted/public deployments is done by setting an owner password (session auth) and/or an
+      // access password — see docs/owner-role-and-password-model.md. We deliberately do NOT add
+      // route-level special-casing to weaken this; the auth path is decided solely by startup config.
+      if (token) {
+        const participant = store.getParticipantByToken(token)
+        if (!participant) return c.json({ error: 'invalid token' }, 403)
+        if (participant.type !== 'human') return c.json({ error: 'owner access required' }, 403)
+        c.set('me', participant)
+      }
+      await next()
+    }
   })
 
   app.onError((err, c) => {
@@ -106,9 +220,78 @@ export function createApp(deps: AppDeps) {
     return c.json({ error: 'internal error' }, 500)
   })
 
+  // ---- auth (login / logout / logout-all) ----
+
+  app.post('/api/auth/login', async (c) => {
+    if (!ownerPasswordHash) {
+      return c.json({ error: 'owner password is not configured' }, 400)
+    }
+    const ip = getClientIp(c)
+    // Rate limit check
+    const entry = getRateLimitEntry(ip)
+    if (entry.lockedUntil > Date.now()) {
+      const retryAfter = Math.ceil((entry.lockedUntil - Date.now()) / 1000)
+      return c.json(
+        { error: 'too many failed login attempts', retry_after: retryAfter },
+        429,
+        { 'Retry-After': String(retryAfter) },
+      )
+    }
+
+    const body = (await c.req.json().catch(() => ({}))) as { password?: string }
+    const password = body.password ?? ''
+
+    if (!(await verifyOwnerPassword(password, ownerPasswordHash))) {
+      recordLoginFailure(ip)
+      return c.json({ error: 'invalid password' }, 401)
+    }
+
+    // Success: clear rate limit, create session
+    clearRateLimitEntry(ip)
+    const session = store.createSession()
+    return c.json({ session_token: session.token }, 201)
+  })
+
+  app.post('/api/auth/logout', async (c) => {
+    if (!ownerPasswordHash) {
+      return c.json({ error: 'owner password is not configured' }, 400)
+    }
+    const token = c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? ''
+    if (!token) return c.json({ error: 'missing token' }, 401)
+    const session = store.getSessionByToken(token)
+    if (!session) return c.json({ error: 'invalid session token' }, 401)
+    store.deleteSession(session.id)
+    return c.json({ ok: true })
+  })
+
+  app.post('/api/auth/logout-all', async (c) => {
+    if (!ownerPasswordHash) {
+      return c.json({ error: 'owner password is not configured' }, 400)
+    }
+    const token = c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? ''
+    if (!token) return c.json({ error: 'missing token' }, 401)
+    const session = store.getSessionByToken(token)
+    if (!session) return c.json({ error: 'invalid session token' }, 401)
+
+    // Rate limit check for logout-all (shares login rate limit to prevent abuse)
+    const ip = getClientIp(c)
+    const entry = getRateLimitEntry(ip)
+    if (entry.lockedUntil > Date.now()) {
+      const retryAfter = Math.ceil((entry.lockedUntil - Date.now()) / 1000)
+      return c.json(
+        { error: 'too many failed attempts', retry_after: retryAfter },
+        429,
+        { 'Retry-After': String(retryAfter) },
+      )
+    }
+
+    store.deleteAllSessions()
+    return c.json({ ok: true })
+  })
+
   // ---- rooms ----
 
-  app.post('/api/rooms', async (c) => {
+  app.post('/api/rooms', ownerOnly, async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { title?: string; cwd?: string; machine_id?: string }
     // a fresh room has no events yet; include last_seq so clients can render the count without a refetch
     const room = { ...store.createRoom(body.title ?? '', { cwd: body.cwd, machine_id: body.machine_id }), last_seq: 0 }
@@ -164,7 +347,7 @@ export function createApp(deps: AppDeps) {
     return room ? c.json(room) : c.json({ error: 'room not found' }, 404)
   })
 
-  app.delete('/api/rooms/:id', (c) => {
+  app.delete('/api/rooms/:id', ownerOnly, (c) => {
     const roomId = c.req.param('id')
     const room = store.getRoom(roomId)
     if (!room) return c.json({ error: 'room not found' }, 404)
@@ -272,7 +455,7 @@ export function createApp(deps: AppDeps) {
 
   // ---- pending joins ----
 
-  app.get('/api/rooms/:id/pending-joins', auth, adminOnly, (c) => {
+  app.get('/api/rooms/:id/pending-joins', ownerOnly, (c) => {
     const roomId = c.req.param('id')
     if (!store.getRoom(roomId)) return c.json({ error: 'room not found' }, 404)
     return c.json(
@@ -286,7 +469,7 @@ export function createApp(deps: AppDeps) {
     )
   })
 
-  app.post('/api/rooms/:id/pending-joins/:rid/approve', auth, adminOnly, async (c) => {
+  app.post('/api/rooms/:id/pending-joins/:rid/approve', ownerOnly, async (c) => {
     const roomId = c.req.param('id')
     const rid = c.req.param('rid')
     if (!store.getRoom(roomId)) return c.json({ error: 'room not found' }, 404)
@@ -306,7 +489,7 @@ export function createApp(deps: AppDeps) {
     return c.json(pj)
   })
 
-  app.post('/api/rooms/:id/pending-joins/:rid/reject', auth, adminOnly, async (c) => {
+  app.post('/api/rooms/:id/pending-joins/:rid/reject', ownerOnly, async (c) => {
     const roomId = c.req.param('id')
     const rid = c.req.param('rid')
     if (!store.getRoom(roomId)) return c.json({ error: 'room not found' }, 404)
@@ -365,7 +548,8 @@ export function createApp(deps: AppDeps) {
 
   app.post('/api/rooms/:id/messages', auth, async (c) => {
     const roomId = c.req.param('id')
-    const me = c.get('me')
+    // auth middleware guarantees a Participant here (room-scoped routes never carry an OwnerSession)
+    const me = c.get('me') as Participant
     const body = (await c.req.json().catch(() => ({}))) as {
       text?: string
       in_reply_to?: string
@@ -444,7 +628,7 @@ export function createApp(deps: AppDeps) {
     const roomId = c.req.param('id')
     const after = Number(c.req.query('after') ?? 0)
     const limit = Math.min(Number(c.req.query('limit') ?? 200), 500)
-    const events = store.listEventsAnnotated(roomId, after, limit, c.get('me').uid)
+    const events = store.listEventsAnnotated(roomId, after, limit, (c.get('me') as Participant).uid)
     return c.json({ events, has_more: events.length === limit })
   })
 
@@ -452,7 +636,7 @@ export function createApp(deps: AppDeps) {
     const roomId = c.req.param('id')
     const body = (await c.req.json().catch(() => ({}))) as { seq?: number }
     if (typeof body.seq !== 'number') return c.json({ error: 'seq is required' }, 400)
-    const me = c.get('me')
+    const me = c.get('me') as Participant
     const result = store.ack(me.uid, body.seq)
     if (me.type === 'agent') hub.setThinking(roomId, me.uid)
     return c.json({ last_acked_seq: result })
@@ -460,7 +644,7 @@ export function createApp(deps: AppDeps) {
 
   app.post('/api/rooms/:id/status', auth, async (c) => {
     const roomId = c.req.param('id')
-    const me = c.get('me')
+    const me = c.get('me') as Participant
     if (me.type !== 'agent') return c.json({ error: 'agent access required' }, 403)
     const body = (await c.req.json().catch(() => ({}))) as { status?: string }
     if (body.status !== 'waiting_human') return c.json({ error: 'invalid status: only "waiting_human" is accepted' }, 400)
@@ -472,7 +656,7 @@ export function createApp(deps: AppDeps) {
 
   app.get('/api/rooms/:id/wait', auth, async (c) => {
     const roomId = c.req.param('id')
-    const me = c.get('me')
+    const me = c.get('me') as Participant
     const after = c.req.query('after') !== undefined ? Number(c.req.query('after')) : me.last_acked_seq
     const windowMs = Math.min(Number(c.req.query('window_ms') ?? pollWindowMs), 1_200_000)
 
@@ -506,7 +690,7 @@ export function createApp(deps: AppDeps) {
 
   app.get('/api/rooms/:id/stream', auth, (c) => {
     const roomId = c.req.param('id')
-    const me = c.get('me')
+    const me = c.get('me') as Participant
     let after = Number(c.req.header('last-event-id') ?? c.req.query('after') ?? 0)
     return streamSSE(c, async (stream) => {
       const untrack = hub.track(roomId, me.uid)
@@ -578,7 +762,7 @@ export function createApp(deps: AppDeps) {
 
   app.get('/api/personas', (c) => c.json(store.listPersonas()))
 
-  app.post('/api/personas', async (c) => {
+  app.post('/api/personas', ownerOnly, async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { name?: string; system_prompt?: string }
     const name = body.name?.trim()
     if (!name || !body.system_prompt) return c.json({ error: 'name and system_prompt are required' }, 400)
@@ -599,7 +783,7 @@ export function createApp(deps: AppDeps) {
     return c.json({ ...llm.info(), models })
   })
 
-  app.post('/api/llm/model', async (c) => {
+  app.post('/api/llm/model', ownerOnly, async (c) => {
     if (!llm.enabled()) return c.json({ error: 'llm is not configured' }, 400)
     const body = (await c.req.json().catch(() => ({}))) as { model?: string }
     const model = typeof body.model === 'string' ? body.model.trim() : ''

@@ -2,11 +2,15 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { version } from '../package.json'
 import {
   api,
+  clearSessionToken,
   identityKey,
+  initAccessPassword,
   loadIdentity,
   loadLastNickname,
+  loadSessionToken,
   saveIdentity,
   saveLastNickname,
+  saveSessionToken,
   type ChatEvent,
   type Identity,
   type LlmInfo,
@@ -18,17 +22,33 @@ import {
 import { Markdown } from './markdown'
 import { LOCALES, useI18n } from './i18n'
 
+// Initialize access password from localStorage on module load
+initAccessPassword()
+
 export default function App() {
   const { t } = useI18n()
   const [rooms, setRooms] = useState<Room[]>([])
   const [roomId, setRoomId] = useState<string | null>(() => location.hash.slice(1) || null)
   const [showPersonas, setShowPersonas] = useState(false)
+  const [showOwnerLogin, setShowOwnerLogin] = useState(false)
 
   const refreshRooms = useCallback(() => {
     api.rooms().then(setRooms).catch(console.error)
   }, [])
 
   useEffect(() => {
+    // Try the global SSE stream first. If the server returns 403 (access password enabled),
+    // fall back to polling /api/rooms with the x-access-password header.
+    let usingSSE = true
+    let pollTimer: ReturnType<typeof setInterval> | null = null
+
+    const startPolling = () => {
+      if (!usingSSE) return // already polling
+      usingSSE = false
+      refreshRooms()
+      pollTimer = setInterval(refreshRooms, 10_000)
+    }
+
     const es = new EventSource('/api/rooms/stream')
     es.addEventListener('rooms:snapshot', (e) => {
       setRooms(JSON.parse((e as MessageEvent).data))
@@ -49,15 +69,25 @@ export default function App() {
     let lastErrorPoll = 0
     es.onerror = () => {
       const now = Date.now()
+      // If we haven't received a snapshot yet, the stream is likely gated (403) — switch to polling
+      if (rooms.length === 0) {
+        es.close()
+        startPolling()
+        return
+      }
       if (now - lastErrorPoll > 5_000) {
         lastErrorPoll = now
         refreshRooms()
       }
     }
     // 60s polling fallback for last_seq (message count) freshness
-    const timer = setInterval(refreshRooms, 60_000)
-    return () => { es.close(); clearInterval(timer) }
-  }, [refreshRooms])
+    const freshnessTimer = setInterval(refreshRooms, 60_000)
+    return () => {
+      es.close()
+      if (pollTimer) clearInterval(pollTimer)
+      clearInterval(freshnessTimer)
+    }
+  }, [refreshRooms]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const onHash = () => setRoomId(location.hash.slice(1) || null)
@@ -66,9 +96,19 @@ export default function App() {
   }, [])
 
   const createRoom = async () => {
-    const room = await api.createRoom()
-    setRooms(prev => prev.some(r => r.id === room.id) ? prev : [room, ...prev])
-    location.hash = room.id
+    try {
+      const room = await api.createRoom()
+      setRooms(prev => prev.some(r => r.id === room.id) ? prev : [room, ...prev])
+      location.hash = room.id
+    } catch (err) {
+      const msg = (err as Error).message
+      // 401/403 on management routes → show owner login dialog
+      if (msg.includes('401') || msg.includes('403') || msg.includes('session') || msg.includes('owner')) {
+        setShowOwnerLogin(true)
+      } else {
+        console.error(err)
+      }
+    }
   }
 
   const deleteRoom = async (e: React.MouseEvent, id: string) => {
@@ -81,12 +121,23 @@ export default function App() {
       if (roomId === id) location.hash = ''
       setRooms(prev => prev.filter(r => r.id !== id))
     } catch (err) {
-      console.error(err)
+      const msg = (err as Error).message
+      if (msg.includes('401') || msg.includes('403') || msg.includes('session') || msg.includes('owner')) {
+        setShowOwnerLogin(true)
+      } else {
+        console.error(err)
+      }
     }
   }
 
   return (
     <div className="layout">
+      {showOwnerLogin && (
+        <OwnerLoginModal
+          onSuccess={() => setShowOwnerLogin(false)}
+          onClose={() => setShowOwnerLogin(false)}
+        />
+      )}
       <aside className="sidebar">
         <header>
           <h1>{t('app.title')}</h1>
@@ -121,6 +172,75 @@ export default function App() {
       ) : (
         <main className="empty">{t('empty.selectOrCreate')}</main>
       )}
+    </div>
+  )
+}
+
+/**
+ * Modal dialog for owner login.
+ * On success, saves the session token to localStorage and calls onSuccess.
+ * The token is then automatically picked up by ownerCredential() in api.ts.
+ */
+function OwnerLoginModal({ onSuccess, onClose }: { onSuccess: () => void; onClose: () => void }) {
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [])
+
+  const doLogin = async () => {
+    if (!password) return
+    setLoading(true)
+    setError('')
+    try {
+      const { session_token } = await api.login(password)
+      saveSessionToken(session_token)
+      onSuccess()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const doLogout = () => {
+    clearSessionToken()
+    onClose()
+  }
+
+  const hasSession = !!loadSessionToken()
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <h2>Owner Login</h2>
+        {hasSession && (
+          <p className="modal-hint">You have an active session. Log out to invalidate it.</p>
+        )}
+        <input
+          ref={inputRef}
+          type="password"
+          placeholder="Owner password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && !loading && doLogin()}
+        />
+        <div className="modal-actions">
+          <button disabled={!password || loading} onClick={doLogin}>
+            {loading ? 'Logging in…' : 'Login'}
+          </button>
+          {hasSession && (
+            <button className="link" onClick={doLogout}>
+              Logout (clear session)
+            </button>
+          )}
+          <button className="link" onClick={onClose}>Cancel</button>
+        </div>
+        {error && <p className="error">{error}</p>}
+      </div>
     </div>
   )
 }
@@ -244,6 +364,7 @@ function ChatView({
   const [pendingJoins, setPendingJoins] = useState<PendingJoin[]>([])
   const [text, setText] = useState('')
   const [error, setError] = useState('')
+  const [showOwnerLogin, setShowOwnerLogin] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   // caret position to restore after a controlled-value rewrite (mention complete / dismiss)
@@ -383,6 +504,12 @@ function ChatView({
 
   return (
     <>
+      {showOwnerLogin && (
+        <OwnerLoginModal
+          onSuccess={() => setShowOwnerLogin(false)}
+          onClose={() => setShowOwnerLogin(false)}
+        />
+      )}
       <main className="chat">
         <div className="messages">
           {events.map((ev) => (
@@ -456,6 +583,7 @@ function ChatView({
             requests={pendingJoins}
             members={members}
             onDone={() => { refreshPendingJoins(); refreshMembers() }}
+            onOwnerAuthRequired={() => setShowOwnerLogin(true)}
           />
         )}
         <h3>{t('members.title')}</h3>
@@ -527,12 +655,14 @@ function PendingApprovalPanel({
   requests,
   members,
   onDone,
+  onOwnerAuthRequired,
 }: {
   roomId: string
   token: string
   requests: PendingJoin[]
   members: Member[]
   onDone: () => void
+  onOwnerAuthRequired?: () => void
 }) {
   const { t } = useI18n()
   // Per-request local state: nickname input, selected bind uid, reject reason
@@ -552,6 +682,15 @@ function PendingApprovalPanel({
     return match?.uid ?? ''
   }
 
+  const handleOwnerError = (err: unknown, requestId: string) => {
+    const msg = (err as Error).message
+    if (msg.includes('401') || msg.includes('403') || msg.includes('session') || msg.includes('owner')) {
+      onOwnerAuthRequired?.()
+    } else {
+      setErrors((prev) => ({ ...prev, [requestId]: msg }))
+    }
+  }
+
   const approveNew = async (req: PendingJoin) => {
     try {
       await api.approvePendingJoin(roomId, req.request_id, token, {
@@ -560,7 +699,7 @@ function PendingApprovalPanel({
       })
       onDone()
     } catch (err) {
-      setErrors((prev) => ({ ...prev, [req.request_id]: (err as Error).message }))
+      handleOwnerError(err, req.request_id)
     }
   }
 
@@ -574,7 +713,7 @@ function PendingApprovalPanel({
       })
       onDone()
     } catch (err) {
-      setErrors((prev) => ({ ...prev, [req.request_id]: (err as Error).message }))
+      handleOwnerError(err, req.request_id)
     }
   }
 
@@ -583,7 +722,7 @@ function PendingApprovalPanel({
       await api.rejectPendingJoin(roomId, req.request_id, token, reasons[req.request_id])
       onDone()
     } catch (err) {
-      setErrors((prev) => ({ ...prev, [req.request_id]: (err as Error).message }))
+      handleOwnerError(err, req.request_id)
     }
   }
 
