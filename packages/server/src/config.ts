@@ -1,7 +1,7 @@
 import { randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
 const scrypt = promisify(scryptCb) as (
@@ -19,17 +19,46 @@ interface ConfigFile {
     port?: number
     /** Bind address; defaults to 127.0.0.1 (loopback only). */
     host?: string
+    /** mute agent-to-agent mentions after this many consecutive agent messages */
+    brake_after?: number
   }
   servers?: Record<string, { password?: string }>
 }
 
+/** Absolute path of the user config file. Kept homedir-based (NOT CHATROOM_DATA_DIR) so reads and writes agree. */
+function configPath(): string {
+  return join(homedir(), '.ai-chatroom', 'config.json')
+}
+
 function loadConfigFile(): ConfigFile {
   try {
-    const path = join(homedir(), '.ai-chatroom', 'config.json')
-    return JSON.parse(readFileSync(path, 'utf-8')) as ConfigFile
+    return JSON.parse(readFileSync(configPath(), 'utf-8')) as ConfigFile
   } catch {
     return {}
   }
+}
+
+/**
+ * Persist changed `server.*` fields back to config.json (read-merge-write).
+ * Preserves unknown fields (machine_id, servers, …) and any server.* keys not being changed.
+ * Pass a field value of `undefined` to delete that key (e.g. disabling the access password).
+ *
+ * NOTE: this is read-merge-write and NOT atomic against *external* concurrent modification (e.g. a
+ * CLI tool editing config.json at the same instant) — last writer wins. The server itself is the sole
+ * intended writer and runs single-threaded, so in-process calls cannot interleave; the cross-process
+ * race is accepted given the single-operator deployment model.
+ */
+function writeServerConfigFields(fields: Partial<NonNullable<ConfigFile['server']>>): void {
+  const current = loadConfigFile()
+  const server: Record<string, unknown> = { ...current.server }
+  for (const [k, v] of Object.entries(fields)) {
+    if (v === undefined) delete server[k]
+    else server[k] = v
+  }
+  const next: ConfigFile = { ...current, server: server as ConfigFile['server'] }
+  const path = configPath()
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, JSON.stringify(next, null, 2) + '\n', 'utf-8')
 }
 
 export interface ServerConfig {
@@ -39,6 +68,17 @@ export interface ServerConfig {
   host: string
   /** Scrypt hash of the owner password, stored as "salt:hash" (hex). Null means local mode (no owner password). */
   ownerPasswordHash: string | null
+  /** mute agent-to-agent mentions after this many consecutive agent messages */
+  brakeAfter: number
+  /**
+   * Which fields are pinned by an environment variable. A pinned field cannot be changed from the
+   * admin UI (the env wins on restart, so a runtime write to config.json would silently no-op).
+   */
+  envPinned: {
+    ownerPasswordHash: boolean
+    accessPassword: boolean
+    brakeAfter: boolean
+  }
 }
 
 /**
@@ -114,6 +154,9 @@ export async function loadServerConfig(): Promise<ServerConfig> {
   // Owner password resolution, in priority order:
   //   1. Pre-computed hash (config file or CHATROOM_OWNER_PASSWORD_HASH env) — preferred, no startup hashing cost.
   //   2. Plaintext bootstrap (CHATROOM_OWNER_PASSWORD env) — hashed once at startup, plaintext never stored.
+  // owner password is env-pinned when it comes from an env var (pre-hashed or plaintext bootstrap),
+  // not from config.json — in that case the admin UI must not offer to change it.
+  const ownerEnvPinned = !!(process.env.CHATROOM_OWNER_PASSWORD_HASH || process.env.CHATROOM_OWNER_PASSWORD)
   let ownerPasswordHash: string | null =
     process.env.CHATROOM_OWNER_PASSWORD_HASH ?? file.server?.owner_password_hash ?? null
   if (!ownerPasswordHash) {
@@ -124,10 +167,83 @@ export async function loadServerConfig(): Promise<ServerConfig> {
     }
   }
 
+  // An empty-string env var means "unset", not "set to empty". Otherwise it would pin a degenerate
+  // value the admin UI then refuses to fix: CHATROOM_ACCESS_PASSWORD="" → gate off yet env-pinned;
+  // CHATROOM_BRAKE_AFTER="" → Number('')=0 → brake engages on the very first agent message.
+  const accessEnv = process.env.CHATROOM_ACCESS_PASSWORD || undefined
+  const brakeEnv = process.env.CHATROOM_BRAKE_AFTER || undefined
+  const accessEnvPinned = accessEnv !== undefined
+  const brakeEnvPinned = brakeEnv !== undefined
+
   return {
-    accessPassword: process.env.CHATROOM_ACCESS_PASSWORD ?? file.server?.access_password ?? null,
+    accessPassword: accessEnv ?? file.server?.access_password ?? null,
     port: Number(process.env.CHATROOM_PORT ?? file.server?.port ?? 8787),
     host: process.env.CHATROOM_HOST ?? file.server?.host ?? '127.0.0.1',
     ownerPasswordHash,
+    brakeAfter: Number(brakeEnv ?? file.server?.brake_after ?? 3),
+    envPinned: {
+      ownerPasswordHash: ownerEnvPinned,
+      accessPassword: accessEnvPinned,
+      brakeAfter: brakeEnvPinned,
+    },
+  }
+}
+
+/**
+ * Mutable, persisted server config shared across the app.
+ *
+ * Holds the runtime-changeable knobs (owner password hash, access password, brake threshold) behind
+ * getters so middleware/handlers always observe the current value rather than a startup snapshot.
+ * Setters persist to config.json. Immutable startup facts (host, allowInsecure, env-pinned flags) are
+ * kept here too so the access-gate guard can mirror the startup checkSecureBind rule.
+ */
+export class RuntimeConfig {
+  private _ownerPasswordHash: string | null
+  private _accessPassword: string | null
+  private _brakeAfter: number
+  readonly host: string
+  readonly allowInsecure: boolean
+  readonly envPinned: ServerConfig['envPinned']
+  /** How changed fields are persisted; defaults to writing config.json. Injectable so tests stay file-free. */
+  private readonly persist: (fields: Partial<NonNullable<ConfigFile['server']>>) => void
+
+  constructor(
+    cfg: ServerConfig,
+    opts: { allowInsecure: boolean; persist?: (fields: Partial<NonNullable<ConfigFile['server']>>) => void },
+  ) {
+    this._ownerPasswordHash = cfg.ownerPasswordHash
+    this._accessPassword = cfg.accessPassword
+    this._brakeAfter = cfg.brakeAfter
+    this.host = cfg.host
+    this.allowInsecure = opts.allowInsecure
+    this.envPinned = cfg.envPinned
+    this.persist = opts.persist ?? writeServerConfigFields
+  }
+
+  get ownerPasswordHash(): string | null {
+    return this._ownerPasswordHash
+  }
+  get accessPassword(): string | null {
+    return this._accessPassword
+  }
+  get brakeAfter(): number {
+    return this._brakeAfter
+  }
+
+  /** Persist a new owner password hash. Caller must reject when envPinned.ownerPasswordHash. */
+  setOwnerPasswordHash(hash: string): void {
+    this._ownerPasswordHash = hash
+    this.persist({ owner_password_hash: hash })
+  }
+
+  /** Enable/disable/change the access password. `null` disables the gate. Caller must guard secure-bind + envPinned. */
+  setAccessPassword(pw: string | null): void {
+    this._accessPassword = pw && pw.length > 0 ? pw : null
+    this.persist({ access_password: this._accessPassword ?? undefined })
+  }
+
+  setBrakeAfter(n: number): void {
+    this._brakeAfter = n
+    this.persist({ brake_after: n })
   }
 }

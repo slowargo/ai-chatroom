@@ -11,6 +11,8 @@ import {
   saveIdentity,
   saveLastNickname,
   saveSessionToken,
+  setAccessPassword,
+  type AdminSettings,
   type ChatEvent,
   type Identity,
   type LlmInfo,
@@ -18,6 +20,7 @@ import {
   type PendingJoin,
   type Persona,
   type Room,
+  type SessionInfo,
 } from './api'
 import { Markdown } from './markdown'
 import { LOCALES, useI18n } from './i18n'
@@ -30,7 +33,20 @@ export default function App() {
   const [rooms, setRooms] = useState<Room[]>([])
   const [roomId, setRoomId] = useState<string | null>(() => location.hash.slice(1) || null)
   const [showPersonas, setShowPersonas] = useState(false)
+  const [showAdmin, setShowAdmin] = useState(false)
   const [showOwnerLogin, setShowOwnerLogin] = useState(false)
+  // null while loading. password mode = owner login required; local mode = fully trusted (everyone owner).
+  const [passwordMode, setPasswordMode] = useState<boolean | null>(null)
+  const [hasSession, setHasSession] = useState(() => !!loadSessionToken())
+
+  // Explicit owner gating (replaces relying on silent 403s): in local mode everyone is owner; in
+  // password mode the owner is whoever holds a session token. A stale token still falls back to the
+  // 401/403 → login flow below.
+  const isOwner = passwordMode === false || hasSession
+
+  useEffect(() => {
+    api.authMode().then((m) => setPasswordMode(m.password_mode)).catch(() => setPasswordMode(false))
+  }, [])
 
   const refreshRooms = useCallback(() => {
     api.rooms().then(setRooms).catch(console.error)
@@ -134,14 +150,14 @@ export default function App() {
     <div className="layout">
       {showOwnerLogin && (
         <OwnerLoginModal
-          onSuccess={() => setShowOwnerLogin(false)}
+          onSuccess={() => { setShowOwnerLogin(false); setHasSession(true) }}
           onClose={() => setShowOwnerLogin(false)}
         />
       )}
       <aside className="sidebar">
         <header>
           <h1>{t('app.title')}</h1>
-          <button onClick={createRoom}>{t('room.new')}</button>
+          {isOwner && <button onClick={createRoom}>{t('room.new')}</button>}
         </header>
         <nav>
           {rooms.map((r) => (
@@ -151,21 +167,36 @@ export default function App() {
               </span>
               <span className="room-meta">
                 {t('room.messageCount', { count: r.last_seq })}
-                <button className="room-delete" onClick={(e) => deleteRoom(e, r.id)} title={t('room.delete')}>×</button>
+                {isOwner && (
+                  <button className="room-delete" onClick={(e) => deleteRoom(e, r.id)} title={t('room.delete')}>×</button>
+                )}
               </span>
             </a>
           ))}
         </nav>
         <footer>
           <LlmStatus />
-          <button className="link" onClick={() => setShowPersonas((v) => !v)}>
+          <button className="link" onClick={() => { setShowPersonas((v) => !v); setShowAdmin(false) }}>
             {showPersonas ? t('nav.backToChat') : t('nav.personaManagement')}
           </button>
+          {isOwner && (
+            <button className="link" onClick={() => { setShowAdmin((v) => !v); setShowPersonas(false) }}>
+              {showAdmin ? t('nav.backToChat') : t('nav.admin')}
+            </button>
+          )}
+          {passwordMode && !hasSession && (
+            <button className="link" onClick={() => setShowOwnerLogin(true)}>{t('owner.login')}</button>
+          )}
           <LanguageSwitcher />
           <span className="version">v{version}</span>
         </footer>
       </aside>
-      {showPersonas ? (
+      {showAdmin ? (
+        <AdminPanel
+          passwordMode={!!passwordMode}
+          onLoggedOut={() => { setHasSession(false); setShowAdmin(false) }}
+        />
+      ) : showPersonas ? (
         <PersonaPanel />
       ) : roomId ? (
         <ChatRoom key={roomId} roomId={roomId} />
@@ -790,6 +821,243 @@ function PendingApprovalPanel({
         )
       })}
     </div>
+  )
+}
+
+/**
+ * Owner admin panel (P1b). Only mounted when the App considers the viewer an owner. Sections that
+ * only make sense in password mode (change password, session list) are hidden in local mode.
+ */
+function AdminPanel({ passwordMode, onLoggedOut }: { passwordMode: boolean; onLoggedOut: () => void }) {
+  const { t } = useI18n()
+  const [settings, setSettings] = useState<AdminSettings | null>(null)
+  const [error, setError] = useState('')
+
+  const refresh = useCallback(() => {
+    api.adminSettings().then(setSettings).catch((e) => setError((e as Error).message))
+  }, [])
+  useEffect(refresh, [refresh])
+
+  const logout = async () => {
+    await api.logout()
+    onLoggedOut()
+  }
+
+  return (
+    <main className="admin">
+      <h2>{t('admin.title')}</h2>
+      {error && <p className="error">{error}</p>}
+      {passwordMode && <PasswordSection envPinned={settings?.owner_password.env_pinned ?? false} />}
+      {passwordMode && <SessionsSection />}
+      {settings && <SettingsSection settings={settings} onChange={setSettings} />}
+      {passwordMode && (
+        <section className="admin-section">
+          <button className="link" onClick={logout}>{t('owner.logout')}</button>
+        </section>
+      )}
+    </main>
+  )
+}
+
+function PasswordSection({ envPinned }: { envPinned: boolean }) {
+  const { t } = useI18n()
+  const [oldPw, setOldPw] = useState('')
+  const [newPw, setNewPw] = useState('')
+  const [confirmPw, setConfirmPw] = useState('')
+  const [msg, setMsg] = useState('')
+  const [error, setError] = useState('')
+
+  const submit = async () => {
+    setMsg(''); setError('')
+    if (newPw !== confirmPw) { setError(t('admin.pw.mismatch')); return }
+    try {
+      await api.changePassword(oldPw, newPw)
+      setMsg(t('admin.pw.success'))
+      setOldPw(''); setNewPw(''); setConfirmPw('')
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  return (
+    <section className="admin-section">
+      <h3>{t('admin.pw.title')}</h3>
+      {envPinned ? (
+        <p className="hint">{t('admin.pw.envPinned')}</p>
+      ) : (
+        <>
+          <input type="password" placeholder={t('admin.pw.old')} value={oldPw} onChange={(e) => setOldPw(e.target.value)} />
+          <input type="password" placeholder={t('admin.pw.new')} value={newPw} onChange={(e) => setNewPw(e.target.value)} />
+          <input type="password" placeholder={t('admin.pw.confirm')} value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)} />
+          <button disabled={!oldPw || !newPw} onClick={submit}>{t('admin.pw.submit')}</button>
+          {msg && <p className="hint">{msg}</p>}
+          {error && <p className="error">{error}</p>}
+        </>
+      )}
+    </section>
+  )
+}
+
+function SessionsSection() {
+  const { t } = useI18n()
+  const [sessions, setSessions] = useState<SessionInfo[]>([])
+  const [error, setError] = useState('')
+
+  const refresh = useCallback(() => {
+    api.listSessions().then(setSessions).catch((e) => setError((e as Error).message))
+  }, [])
+  useEffect(refresh, [refresh])
+
+  const revoke = async (id: string) => {
+    try {
+      await api.revokeSession(id)
+      refresh()
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  return (
+    <section className="admin-section">
+      <h3>{t('admin.sessions.title')}</h3>
+      {sessions.length === 0 ? (
+        <p className="hint">{t('admin.sessions.empty')}</p>
+      ) : (
+        <ul className="session-list">
+          {sessions.map((s) => (
+            <li key={s.id}>
+              <span className="session-meta">
+                {t('admin.sessions.created')}: {new Date(s.created_at).toLocaleString()}
+                {' · '}
+                {t('admin.sessions.lastUsed')}: {new Date(s.last_used_at).toLocaleString()}
+                {s.current && <span className="badge me">{t('admin.sessions.current')}</span>}
+              </span>
+              <button className="reject" onClick={() => revoke(s.id)}>{t('admin.sessions.revoke')}</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {error && <p className="error">{error}</p>}
+    </section>
+  )
+}
+
+function SettingsSection({ settings, onChange }: { settings: AdminSettings; onChange: (s: AdminSettings) => void }) {
+  const { t } = useI18n()
+  const [brake, setBrake] = useState(String(settings.brake_after))
+  const [accessPw, setAccessPw] = useState('')
+  const [msg, setMsg] = useState('')
+  const [error, setError] = useState('')
+
+  const saveBrake = async () => {
+    setMsg(''); setError('')
+    try {
+      const next = await api.updateAdminSettings({ brake_after: Number(brake) })
+      onChange(next); setBrake(String(next.brake_after)); setMsg(t('admin.settings.saved'))
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  // Toggling the gate changes which requests need the access-password header — including the already
+  // open global rooms EventSource, which can't add a header and would then 403 with no clean recovery
+  // (its onerror fallback reads a stale mount-time `rooms` closure). A full reload re-establishes the
+  // correct SSE-vs-poll strategy and re-reads the stored access password. Persist the credential
+  // BEFORE reloading so the reloaded app picks it up via initAccessPassword().
+  const enableAccess = async () => {
+    setError('')
+    try {
+      await api.updateAdminSettings({ access_password: accessPw })
+      setAccessPassword(accessPw)
+      location.reload()
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  const disableAccess = async () => {
+    setError('')
+    try {
+      await api.updateAdminSettings({ access_password: null })
+      setAccessPassword(null)
+      location.reload()
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  const switchModel = async (model: string) => {
+    setMsg(''); setError('')
+    try {
+      await api.setLlmModel(model)
+      onChange(await api.adminSettings())
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  const llm = settings.llm
+  const modelOptions = llm.model && !llm.models.includes(llm.model) ? [llm.model, ...llm.models] : llm.models
+  const gate = settings.access_gate
+
+  return (
+    <section className="admin-section">
+      <h3>{t('admin.settings.title')}</h3>
+
+      {llm.enabled && (
+        <div className="setting-row">
+          <label>{t('admin.settings.model')}</label>
+          <select value={llm.model ?? ''} onChange={(e) => switchModel(e.target.value)}>
+            {modelOptions.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      <div className="setting-row">
+        <label>{t('admin.settings.brake')}</label>
+        <input
+          type="number"
+          min={1}
+          max={100}
+          value={brake}
+          disabled={settings.brake.env_pinned}
+          onChange={(e) => setBrake(e.target.value)}
+        />
+        <button disabled={settings.brake.env_pinned} onClick={saveBrake}>{t('admin.settings.save')}</button>
+        {settings.brake.env_pinned && <span className="hint">{t('admin.settings.envPinned')}</span>}
+      </div>
+      <p className="hint">{t('admin.settings.brakeHint')}</p>
+
+      <div className="setting-row">
+        <label>{t('admin.settings.accessGate')}</label>
+        <span className="badge">{gate.enabled ? t('admin.settings.accessOn') : t('admin.settings.accessOff')}</span>
+      </div>
+      {gate.env_pinned ? (
+        <p className="hint">{t('admin.settings.envPinned')}</p>
+      ) : gate.enabled ? (
+        <div className="setting-row">
+          <button className="reject" disabled={!gate.can_disable} onClick={disableAccess}>
+            {t('admin.settings.accessDisable')}
+          </button>
+          {!gate.can_disable && <span className="hint">{t('admin.settings.accessCannotDisable')}</span>}
+        </div>
+      ) : (
+        <div className="setting-row">
+          <input
+            type="password"
+            placeholder={t('admin.settings.accessPlaceholder')}
+            value={accessPw}
+            onChange={(e) => setAccessPw(e.target.value)}
+          />
+          <button disabled={!accessPw} onClick={enableAccess}>{t('admin.settings.accessEnable')}</button>
+        </div>
+      )}
+
+      {msg && <p className="hint">{msg}</p>}
+      {error && <p className="error">{error}</p>}
+    </section>
   )
 }
 

@@ -77,6 +77,11 @@ export class Store {
     return new Date().toISOString()
   }
 
+  /** Update the agent-loop brake threshold at runtime (admin settings). */
+  setBrakeAfter(n: number): void {
+    this.opts.brakeAfter = n
+  }
+
   // ---- rooms ----
 
   createRoom(title = '', opts: { cwd?: string; machine_id?: string } = {}): Room {
@@ -619,6 +624,14 @@ export class Store {
     // `kind` is not a stored column; add it so the returned object carries the union discriminant.
     const row = this.db.prepare('SELECT * FROM sessions WHERE token = ?').get(token) as Omit<OwnerSession, 'kind'> | undefined
     return row ? { kind: 'session', ...row } : undefined
+  }
+
+  /** List all owner sessions (login devices), newest first. */
+  listSessions(): OwnerSession[] {
+    const rows = this.db
+      .prepare('SELECT * FROM sessions ORDER BY created_at DESC')
+      .all() as Omit<OwnerSession, 'kind'>[]
+    return rows.map((r) => ({ kind: 'session', ...r }))
   }
 
   /** Update last_used_at for a session. */

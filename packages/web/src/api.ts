@@ -64,6 +64,26 @@ export interface LlmInfo {
   models: string[]
 }
 
+/** One owner session (login device) as returned by /api/auth/sessions (token never exposed). */
+export interface SessionInfo {
+  id: string
+  created_at: string
+  last_used_at: string
+  label: string
+  /** true for the session whose token the caller is using */
+  current: boolean
+}
+
+/** Admin settings view (/api/admin/settings). `env_pinned` fields cannot be changed from the UI. */
+export interface AdminSettings {
+  llm: LlmInfo
+  brake_after: number
+  brake: { env_pinned: boolean }
+  access_gate: { enabled: boolean; env_pinned: boolean; can_disable: boolean }
+  owner_password: { env_pinned: boolean }
+  password_mode: boolean
+}
+
 // ---- session token (owner auth) ----
 
 const SESSION_TOKEN_KEY = 'chatroom:session_token'
@@ -217,6 +237,30 @@ export const api = {
     fetch(`/api/rooms/${roomId}/pending-joins`, {
       headers: buildHeaders({ ownerToken: ownerCredential(token) }),
     }).then((r) => j<PendingJoin[]>(r)),
+
+  // ---- admin: settings + session management (ownerOnly) ----
+  /** Public: whether the server requires owner login (password mode) or runs in local mode. */
+  authMode: () =>
+    fetch('/api/auth/mode', { headers: buildHeaders() }).then((r) => j<{ password_mode: boolean }>(r)),
+  adminSettings: () =>
+    fetch('/api/admin/settings', { headers: buildHeaders({ ownerToken: ownerCredential() }) })
+      .then((r) => j<AdminSettings>(r)),
+  updateAdminSettings: (body: { brake_after?: number; access_password?: string | null }) =>
+    fetch('/api/admin/settings', {
+      method: 'PATCH',
+      headers: buildHeaders({ body: true, ownerToken: ownerCredential() }),
+      body: JSON.stringify(body),
+    }).then((r) => j<AdminSettings>(r)),
+  changePassword: (old_password: string, new_password: string) =>
+    postOwner('/api/auth/password', { old_password, new_password }).then((r) => j<{ ok: true }>(r)),
+  listSessions: () =>
+    fetch('/api/auth/sessions', { headers: buildHeaders({ ownerToken: ownerCredential() }) })
+      .then((r) => j<SessionInfo[]>(r)),
+  revokeSession: (id: string) =>
+    fetch(`/api/auth/sessions/${id}`, {
+      method: 'DELETE',
+      headers: buildHeaders({ ownerToken: ownerCredential() }),
+    }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }),
 
   // ---- owner auth ----
   login: (password: string) =>

@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createApp } from './app.js'
-import { checkSecureBind, loadServerConfig } from './config.js'
+import { RuntimeConfig, checkSecureBind, loadServerConfig } from './config.js'
 import { openDb } from './db.js'
 import { Hub } from './hub.js'
 import { Llm } from './llm.js'
@@ -31,8 +31,10 @@ if (bindError) {
   process.exit(1)
 }
 
-const store = new Store(openDb(dbPath), {
-  brakeAfter: Number(process.env.CHATROOM_BRAKE_AFTER ?? 3),
+const store = new Store(openDb(dbPath), { brakeAfter: serverConfig.brakeAfter })
+// Mutable, persisted config shared with the app so /admin can change these at runtime.
+const runtimeConfig = new RuntimeConfig(serverConfig, {
+  allowInsecure: !!process.env.CHATROOM_ALLOW_INSECURE_BIND,
 })
 const app = createApp({
   store,
@@ -40,8 +42,7 @@ const app = createApp({
   llm: Llm.fromEnv(),
   pollWindowMs: Number(process.env.CHATROOM_POLL_WINDOW_MS ?? 25_000),
   webDist: existsSync(webDist) ? webDist : undefined,
-  accessPassword: serverConfig.accessPassword,
-  ownerPasswordHash: serverConfig.ownerPasswordHash,
+  config: runtimeConfig,
 })
 
 const port = serverConfig.port
