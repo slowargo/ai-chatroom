@@ -389,6 +389,36 @@ export function createApp(deps: AppDeps) {
     const persona = body.persona_id ? store.getPersona(body.persona_id) : undefined
     if (body.persona_id && !persona) return c.json({ error: 'persona not found' }, 404)
 
+    // P1a — owner (session-backed) join. Only when an owner password is configured AND the
+    // Authorization header carries a valid owner session token. The owner gets/keeps this room's
+    // single role=owner participant, located by role (not nickname), shared across browsers.
+    // CRITICAL: the session token is never passed as a participant token; it only flips `asOwner`.
+    // On re-join the existing owner participant is returned as-is, so a changed nickname/persona
+    // only takes effect on the first create.
+    if (ownerPasswordHash) {
+      const authToken = c.req.header('authorization')?.replace(/^Bearer\s+/i, '')
+      if (authToken && store.getSessionByToken(authToken)) {
+        // Owner is always a human identity; a fallback nickname keeps the first-time create valid.
+        const ownerNick = body.nickname?.trim() || 'owner'
+        const { participant, rejoined, events } = store.joinRoom(roomId, {
+          nickname: ownerNick,
+          type: 'human',
+          persona_id: persona?.id ?? null,
+          asOwner: true,
+        })
+        emit(roomId, events)
+        return c.json(
+          {
+            ...publicParticipant(participant),
+            token: participant.token,
+            rejoined,
+            persona: participant.persona_id ? store.getPersona(participant.persona_id) ?? null : null,
+          },
+          rejoined ? 200 : 201,
+        )
+      }
+    }
+
     // Agent without a token goes through approval flow
     if (type === 'agent' && !body.token) {
       const hint = body.nickname_hint?.trim().replace(/[@\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 20)
@@ -430,6 +460,8 @@ export function createApp(deps: AppDeps) {
           persona_id: persona?.id ?? null,
           token: body.token ?? null,
           reclaim: !autoNick,
+          // local mode (no owner password) → a new human is role=owner; otherwise role=member
+          localMode: !ownerPasswordHash,
         })
         break
       } catch (err) {

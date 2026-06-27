@@ -7,6 +7,7 @@ import type {
   EventKind,
   OwnerSession,
   Participant,
+  ParticipantRole,
   ParticipantType,
   PendingJoin,
   Persona,
@@ -174,11 +175,45 @@ export class Store {
    * Rejoin without a token but with `reclaim` set returns the existing same-nickname identity as-is
    * (its token is not rotated), so multiple clients sharing a nickname coexist instead of kicking
    * each other offline.
+   *
+   * P1a — owner identity:
+   *  - `asOwner` (caller verified a valid owner session): locate this room's single owner participant
+   *    by role (NOT by nickname); if present, return it as-is (shared token, never rotated) so all of
+   *    the owner's logged-in browsers share one in-room identity. If absent, create a fresh role=owner
+   *    participant. The session token is never passed in as `input.token`.
+   *  - `localMode` (no owner password configured): a new human participant is created as role=owner
+   *    (zero-config "everyone is owner"); otherwise a new human is role=member.
    */
   joinRoom(
     roomId: string,
-    input: { nickname: string; type: ParticipantType; persona_id?: string | null; token?: string | null; reclaim?: boolean },
+    input: {
+      nickname: string
+      type: ParticipantType
+      persona_id?: string | null
+      token?: string | null
+      reclaim?: boolean
+      asOwner?: boolean
+      localMode?: boolean
+    },
   ): { participant: Participant; rejoined: boolean; events: ChatEvent[] } {
+    // Owner (session-backed) join: identity is keyed by owner+room, located by role — not by nickname.
+    if (input.asOwner) {
+      const existingOwner = this.db
+        .prepare("SELECT * FROM participants WHERE room_id = ? AND role = 'owner' LIMIT 1")
+        .get(roomId) as Participant | undefined
+      if (existingOwner) {
+        // Share the existing owner identity across browsers; do not rotate its token.
+        return { participant: existingOwner, rejoined: true, events: [] }
+      }
+      // No owner yet in this room: create one with the requested nickname.
+      return this.createParticipant(roomId, {
+        nickname: input.nickname,
+        type: input.type,
+        role: 'owner',
+        persona_id: input.persona_id ?? null,
+      })
+    }
+
     if (input.token) {
       const existing = this.getParticipantByToken(input.token)
       if (existing && existing.room_id === roomId) {
@@ -222,12 +257,30 @@ export class Store {
       throw new ConflictError(`nickname "${input.nickname}" is taken in this room`)
     }
 
+    // Role assignment for a freshly created participant:
+    //   agent → 'agent'; human → 'owner' in local mode (no owner password), else 'member'.
+    const role: ParticipantRole =
+      input.type === 'agent' ? 'agent' : input.localMode ? 'owner' : 'member'
+    return this.createParticipant(roomId, {
+      nickname: input.nickname,
+      type: input.type,
+      role,
+      persona_id: input.persona_id ?? null,
+    })
+  }
+
+  /** Insert a brand-new participant row (with role) and emit the member_joined event. */
+  private createParticipant(
+    roomId: string,
+    input: { nickname: string; type: ParticipantType; role: ParticipantRole; persona_id?: string | null },
+  ): { participant: Participant; rejoined: boolean; events: ChatEvent[] } {
     const participant: Participant = {
       uid: ulid(),
       room_id: roomId,
       persona_id: input.persona_id ?? null,
       nickname: input.nickname,
       type: input.type,
+      role: input.role,
       token: randomBytes(24).toString('base64url'),
       last_acked_seq: 0,
       created_at: this.now(),
@@ -236,8 +289,8 @@ export class Store {
     this.db.transaction(() => {
       this.db
         .prepare(
-          `INSERT INTO participants (uid, room_id, persona_id, nickname, type, token, last_acked_seq, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO participants (uid, room_id, persona_id, nickname, type, role, token, last_acked_seq, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           participant.uid,
@@ -245,6 +298,7 @@ export class Store {
           participant.persona_id,
           participant.nickname,
           participant.type,
+          participant.role,
           participant.token,
           participant.last_acked_seq,
           participant.created_at,
@@ -253,7 +307,7 @@ export class Store {
         kind: 'member_joined',
         sender_uid: participant.uid,
         text: `${participant.nickname} joined`,
-        payload: { uid: participant.uid, nickname: participant.nickname, type: participant.type },
+        payload: { uid: participant.uid, nickname: participant.nickname, type: participant.type, role: participant.role },
       })
     })()
     return { participant, rejoined: false, events }

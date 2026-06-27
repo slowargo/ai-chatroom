@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS participants (
   persona_id     TEXT REFERENCES personas(id),
   nickname       TEXT NOT NULL,
   type           TEXT NOT NULL CHECK (type IN ('human','agent')),
+  role           TEXT NOT NULL DEFAULT 'member',
   token          TEXT NOT NULL UNIQUE,
   last_acked_seq INTEGER NOT NULL DEFAULT 0,
   created_at     TEXT NOT NULL,
@@ -72,5 +73,14 @@ export function openDb(path: string): Database.Database {
     db.exec("ALTER TABLE rooms ADD COLUMN machine_id TEXT DEFAULT NULL")
   }
   db.exec("CREATE INDEX IF NOT EXISTS idx_rooms_cwd ON rooms(cwd)")
+
+  // migrate DBs created before the participants.role column existed (P1a: owner in-room identity).
+  // Backfill existing rows under the single-owner assumption: human → owner, agent → agent.
+  const participantCols = db.prepare('PRAGMA table_info(participants)').all() as Array<{ name: string }>
+  if (!participantCols.some((c) => c.name === 'role')) {
+    db.exec("ALTER TABLE participants ADD COLUMN role TEXT NOT NULL DEFAULT 'member'")
+    db.exec("UPDATE participants SET role = 'owner' WHERE type = 'human'")
+    db.exec("UPDATE participants SET role = 'agent' WHERE type = 'agent'")
+  }
   return db
 }

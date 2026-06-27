@@ -1,3 +1,7 @@
+import Database from 'better-sqlite3'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join as pathJoin } from 'node:path'
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { createApp } from '../src/app.js'
 import { checkSecureBind, hashOwnerPassword, verifyOwnerPassword } from '../src/config.js'
@@ -1027,5 +1031,171 @@ describe('P0b — default-deny secure bind (checkSecureBind)', () => {
   it('refuses a concrete public-looking address with no auth', () => {
     const err = checkSecureBind({ host: '192.168.1.50', accessPassword: null, ownerPasswordHash: null })
     expect(err).toBeTruthy()
+  })
+})
+
+// ---- P1a · owner in-room identity (role column + session-aware join) ----
+
+describe('P1a — participants.role migration backfill', () => {
+  it('backfills role: human → owner, agent → agent on an old DB', () => {
+    // A :memory: DB cannot be reopened across connections, so use a real temp file.
+    const dir = mkdtempSync(pathJoin(tmpdir(), 'chatroom-mig-'))
+    const dbPath = pathJoin(dir, 'old.db')
+    try {
+      // Build a pre-P1a participants table (no `role` column) and insert legacy rows.
+      const db = new Database(dbPath)
+      db.exec(`
+        CREATE TABLE rooms (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+        CREATE TABLE participants (
+          uid TEXT PRIMARY KEY, room_id TEXT NOT NULL, persona_id TEXT, nickname TEXT NOT NULL,
+          type TEXT NOT NULL CHECK (type IN ('human','agent')), token TEXT NOT NULL UNIQUE,
+          last_acked_seq INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+          UNIQUE (room_id, nickname)
+        );
+        INSERT INTO rooms (id, title, created_at) VALUES ('r1', '', '2020-01-01');
+        INSERT INTO participants (uid, room_id, nickname, type, token, created_at)
+          VALUES ('u-human', 'r1', 'alice', 'human', 'tok-human', '2020-01-01');
+        INSERT INTO participants (uid, room_id, nickname, type, token, created_at)
+          VALUES ('u-agent', 'r1', 'bot', 'agent', 'tok-agent', '2020-01-01');
+      `)
+      db.close()
+
+      // Re-open via openDb → runs the idempotent migration + backfill.
+      const migrated = openDb(dbPath)
+      const rows = migrated.prepare('SELECT uid, type, role FROM participants ORDER BY uid').all() as Array<{ uid: string; type: string; role: string }>
+      const byUid = Object.fromEntries(rows.map((r) => [r.uid, r.role]))
+      expect(byUid['u-human']).toBe('owner')
+      expect(byUid['u-agent']).toBe('agent')
+      migrated.close()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('P1a — owner in-room identity (session-aware join)', () => {
+  const OWNER_PW = 'p1a-owner-pw'
+  let ownerHash: string
+
+  beforeAll(async () => {
+    ownerHash = await hashOwnerPassword(OWNER_PW)
+  })
+
+  function pwApp() {
+    return createApp({
+      store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
+      hub: new Hub(),
+      llm: new Llm(),
+      pollWindowMs: 100,
+      ownerPasswordHash: ownerHash,
+    })
+  }
+  function localApp() {
+    return createApp({
+      store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
+      hub: new Hub(),
+      llm: new Llm(),
+      pollWindowMs: 100,
+    })
+  }
+  async function jpost(app: App, path: string, body: unknown, token?: string) {
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (token) headers.authorization = `Bearer ${token}`
+    return app.request(path, { method: 'POST', headers, body: JSON.stringify(body) })
+  }
+  async function getSession(app: App) {
+    const res = await jpost(app, '/api/auth/login', { password: OWNER_PW })
+    return (await res.json() as { session_token: string }).session_token
+  }
+  async function createRoomViaSession(app: App, session: string) {
+    const res = await jpost(app, '/api/rooms', {}, session)
+    return (await res.json() as { id: string }).id
+  }
+
+  it('owner join (with session) creates a role=owner participant', async () => {
+    const app = pwApp()
+    const session = await getSession(app)
+    const roomId = await createRoomViaSession(app, session)
+
+    const res = await jpost(app, `/api/rooms/${roomId}/join`, { nickname: 'boss', type: 'human' }, session)
+    expect(res.status).toBe(201)
+    const me = await res.json() as any
+    expect(me.role).toBe('owner')
+    expect(me.token).toBeTruthy()
+  })
+
+  it('a second session join returns the SAME owner participant (shared token, not rotated)', async () => {
+    const app = pwApp()
+    const s1 = await getSession(app)
+    const roomId = await createRoomViaSession(app, s1)
+
+    const first = await (await jpost(app, `/api/rooms/${roomId}/join`, { nickname: 'boss', type: 'human' }, s1)).json() as any
+
+    // A second, independent browser logs in (separate session) and joins the same room.
+    const s2 = await getSession(app)
+    expect(s2).not.toBe(s1)
+    const second = await jpost(app, `/api/rooms/${roomId}/join`, { nickname: 'whatever', type: 'human' }, s2)
+    expect(second.status).toBe(200) // rejoined → 200
+    const secondBody = await second.json() as any
+
+    expect(secondBody.uid).toBe(first.uid)
+    expect(secondBody.token).toBe(first.token) // token must NOT be rotated
+    expect(secondBody.role).toBe('owner')
+  })
+
+  it('password mode: a human join WITHOUT a session is role=member', async () => {
+    const app = pwApp()
+    const session = await getSession(app)
+    const roomId = await createRoomViaSession(app, session)
+
+    // No Authorization header → ordinary human join.
+    const res = await jpost(app, `/api/rooms/${roomId}/join`, { nickname: 'guest', type: 'human' })
+    expect(res.status).toBe(201)
+    const me = await res.json() as any
+    expect(me.role).toBe('member')
+  })
+
+  it('local mode: a human join is role=owner', async () => {
+    const app = localApp()
+    const room = await (await jpost(app, '/api/rooms', {})).json() as any
+    const res = await jpost(app, `/api/rooms/${room.id}/join`, { nickname: 'alice', type: 'human' })
+    expect(res.status).toBe(201)
+    const me = await res.json() as any
+    expect(me.role).toBe('owner')
+  })
+
+  it('agent join is role=agent (via approval)', async () => {
+    const app = localApp()
+    const room = await (await jpost(app, '/api/rooms', {})).json() as any
+    const human = await (await jpost(app, `/api/rooms/${room.id}/join`, { nickname: 'alice', type: 'human' })).json() as any
+
+    const pending = await (await jpost(app, `/api/rooms/${room.id}/join`, { type: 'agent', nickname: 'bot' })).json() as any
+    await jpost(app, `/api/rooms/${room.id}/pending-joins/${pending.request_id}/approve`, { action: 'new' }, human.token)
+
+    const members = await (await app.request(`/api/rooms/${room.id}/members?token=${human.token}`)).json() as any[]
+    const bot = members.find((m) => m.nickname === 'bot')
+    expect(bot?.role).toBe('agent')
+  })
+
+  it('members listing exposes role', async () => {
+    const app = localApp()
+    const room = await (await jpost(app, '/api/rooms', {})).json() as any
+    const human = await (await jpost(app, `/api/rooms/${room.id}/join`, { nickname: 'alice', type: 'human' })).json() as any
+    const members = await (await app.request(`/api/rooms/${room.id}/members?token=${human.token}`)).json() as any[]
+    expect(members[0].role).toBe('owner')
+  })
+
+  it('red-line still holds: a session token is never accepted as a participant token on room routes', async () => {
+    const app = pwApp()
+    const session = await getSession(app)
+    const roomId = await createRoomViaSession(app, session)
+    // Using the session token directly on an auth-protected room route (messages) must fail:
+    // the session token is not a participant token.
+    const res = await app.request(`/api/rooms/${roomId}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${session}` },
+      body: JSON.stringify({ text: 'hi' }),
+    })
+    expect(res.status).toBe(401)
   })
 })

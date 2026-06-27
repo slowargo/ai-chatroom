@@ -1,5 +1,13 @@
 export type ParticipantType = 'human' | 'agent'
 
+/**
+ * Participant role within a room (P1a):
+ *  - 'owner'  : the single system owner present in this room (management authority)
+ *  - 'member' : a non-owner human (only assigned when an owner password is set)
+ *  - 'agent'  : an agent participant
+ */
+export type ParticipantRole = 'owner' | 'member' | 'agent'
+
 export type EventKind = 'message' | 'member_joined' | 'member_left' | 'system' | 'room_updated' | 'room_deleted' | 'nickname_changed'
 
 export interface Room {
@@ -25,6 +33,7 @@ export interface Participant {
   persona_id: string | null
   nickname: string
   type: ParticipantType
+  role: ParticipantRole
   token: string
   last_acked_seq: number
   created_at: string

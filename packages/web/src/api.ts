@@ -18,6 +18,7 @@ export interface Member {
   uid: string
   nickname: string
   type: 'human' | 'agent'
+  role?: 'owner' | 'member' | 'agent'
   persona_name: string | null
   online: boolean
   status: 'idle' | 'thinking' | 'waiting_human'
@@ -198,8 +199,12 @@ export const api = {
       .then((r) => j<PendingJoin>(r)),
 
   // ---- room-scoped routes (need participant token, plus access password) ----
+  // When logged in (a session token is stored), send it as Authorization: Bearer so the server
+  // resolves this as the owner's in-room identity (role=owner). When not logged in, no auth header
+  // is sent and join behaves as before (nickname-based human / reclaim).
   join: (roomId: string, body: { nickname: string; type: 'human'; token?: string }) =>
-    post(`/api/rooms/${roomId}/join`, body).then((r) => j<Identity & { rejoined: boolean }>(r)),
+    post(`/api/rooms/${roomId}/join`, body, loadSessionToken() ?? undefined)
+      .then((r) => j<Identity & { rejoined: boolean }>(r)),
   members: (roomId: string, token: string) =>
     fetch(`/api/rooms/${roomId}/members?token=${token}`, { headers: buildHeaders() })
       .then((r) => j<Member[]>(r)),
