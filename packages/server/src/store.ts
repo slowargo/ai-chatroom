@@ -210,7 +210,15 @@ export class Store {
         // Share the existing owner identity across browsers; do not rotate its token.
         return { participant: existingOwner, rejoined: true, events: [] }
       }
-      // No owner yet in this room: create one with the requested nickname.
+      // No owner yet in this room: create one with the requested nickname. Validate it and pre-check
+      // for a collision so a clash with an existing (non-owner) participant surfaces as a clean 409
+      // instead of a raw SQLITE_CONSTRAINT_UNIQUE → 500. Taking over a colliding participant (promoting
+      // it to owner after a frontend confirm) is deliberately deferred — for now the owner re-picks.
+      assertValidNickname(input.nickname)
+      const taken = this.db
+        .prepare('SELECT 1 FROM participants WHERE room_id = ? AND nickname = ?')
+        .get(roomId, input.nickname)
+      if (taken) throw new ConflictError(`nickname "${input.nickname}" is taken in this room`)
       return this.createParticipant(roomId, {
         nickname: input.nickname,
         type: input.type,

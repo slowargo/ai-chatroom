@@ -139,9 +139,22 @@ export function initAccessPassword() {
 
 // ---- HTTP helpers ----
 
+/** Error carrying the HTTP status, so callers can branch on 401/403 without fragile string matching. */
+export class ApiError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
+/** True for auth failures on management routes (missing/invalid owner credential). */
+export function isAuthError(err: unknown): boolean {
+  return err instanceof ApiError && (err.status === 401 || err.status === 403)
+}
+
 async function j<T>(res: Response): Promise<T> {
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`)
+  if (!res.ok) throw new ApiError(res.status, (data as { error?: string }).error ?? `HTTP ${res.status}`)
   return data as T
 }
 
@@ -202,7 +215,7 @@ export const api = {
     fetch(`/api/rooms/${id}`, {
       method: 'DELETE',
       headers: buildHeaders({ ownerToken: ownerCredential(participantToken) }),
-    }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }),
+    }).then((r) => { if (!r.ok) throw new ApiError(r.status, `HTTP ${r.status}`) }),
   createPersona: (name: string, system_prompt: string, participantToken?: string) =>
     postOwner('/api/personas', { name, system_prompt }, participantToken).then((r) => j<Persona>(r)),
   setLlmModel: (model: string, participantToken?: string) =>
@@ -260,7 +273,7 @@ export const api = {
     fetch(`/api/auth/sessions/${id}`, {
       method: 'DELETE',
       headers: buildHeaders({ ownerToken: ownerCredential() }),
-    }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }),
+    }).then((r) => { if (!r.ok) throw new ApiError(r.status, `HTTP ${r.status}`) }),
 
   // ---- owner auth ----
   login: (password: string) =>

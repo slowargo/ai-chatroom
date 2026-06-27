@@ -1155,6 +1155,19 @@ describe('P1a — owner in-room identity (session-aware join)', () => {
     expect(me.role).toBe('member')
   })
 
+  it('owner first-join with a nickname taken by a member returns a clean 409 (not 500)', async () => {
+    const app = pwApp()
+    const session = await getSession(app)
+    const roomId = await createRoomViaSession(app, session)
+    // a non-owner human takes the nickname "taken"
+    const member = await jpost(app, `/api/rooms/${roomId}/join`, { nickname: 'taken', type: 'human' })
+    expect(member.status).toBe(201)
+    // owner first-join (no owner participant yet) picks the same nickname → ConflictError → 409
+    const res = await jpost(app, `/api/rooms/${roomId}/join`, { nickname: 'taken', type: 'human' }, session)
+    expect(res.status).toBe(409)
+    expect(((await res.json()) as { error?: string }).error).toContain('taken')
+  })
+
   it('local mode: a human join is role=owner', async () => {
     const app = localApp()
     const room = await (await jpost(app, '/api/rooms', {})).json() as any

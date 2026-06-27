@@ -3,6 +3,7 @@ import { version } from '../package.json'
 import {
   api,
   clearSessionToken,
+  isAuthError,
   identityKey,
   initAccessPassword,
   loadIdentity,
@@ -111,47 +112,56 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
+  // The action that triggered an owner-login prompt, replayed once login succeeds so the user does
+  // not have to click twice. Held in a ref so replacing it never causes a re-render.
+  const retryAfterLogin = useRef<(() => void) | null>(null)
+  const requireOwner = (retry: () => void) => {
+    retryAfterLogin.current = retry
+    setShowOwnerLogin(true)
+  }
+
   const createRoom = async () => {
     try {
       const room = await api.createRoom()
       setRooms(prev => prev.some(r => r.id === room.id) ? prev : [room, ...prev])
       location.hash = room.id
     } catch (err) {
-      const msg = (err as Error).message
-      // 401/403 on management routes → show owner login dialog
-      if (msg.includes('401') || msg.includes('403') || msg.includes('session') || msg.includes('owner')) {
-        setShowOwnerLogin(true)
-      } else {
-        console.error(err)
-      }
+      if (isAuthError(err)) requireOwner(createRoom)
+      else console.error(err)
     }
   }
 
-  const deleteRoom = async (e: React.MouseEvent, id: string) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (!confirm(t('room.confirmDelete'))) return
+  const doDeleteRoom = async (id: string) => {
     try {
       await api.deleteRoom(id)
       localStorage.removeItem(identityKey(id))
       if (roomId === id) location.hash = ''
       setRooms(prev => prev.filter(r => r.id !== id))
     } catch (err) {
-      const msg = (err as Error).message
-      if (msg.includes('401') || msg.includes('403') || msg.includes('session') || msg.includes('owner')) {
-        setShowOwnerLogin(true)
-      } else {
-        console.error(err)
-      }
+      if (isAuthError(err)) requireOwner(() => doDeleteRoom(id))
+      else console.error(err)
     }
+  }
+
+  const deleteRoom = (e: React.MouseEvent, id: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!confirm(t('room.confirmDelete'))) return
+    void doDeleteRoom(id)
   }
 
   return (
     <div className="layout">
       {showOwnerLogin && (
         <OwnerLoginModal
-          onSuccess={() => { setShowOwnerLogin(false); setHasSession(true) }}
-          onClose={() => setShowOwnerLogin(false)}
+          onSuccess={() => {
+            setShowOwnerLogin(false)
+            setHasSession(true)
+            const retry = retryAfterLogin.current
+            retryAfterLogin.current = null
+            retry?.()
+          }}
+          onClose={() => { retryAfterLogin.current = null; setShowOwnerLogin(false) }}
         />
       )}
       <aside className="sidebar">
@@ -396,6 +406,8 @@ function ChatView({
   const [text, setText] = useState('')
   const [error, setError] = useState('')
   const [showOwnerLogin, setShowOwnerLogin] = useState(false)
+  // approval action to replay after a successful owner login (avoids a second click)
+  const retryAfterLogin = useRef<(() => void) | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   // caret position to restore after a controlled-value rewrite (mention complete / dismiss)
@@ -537,8 +549,13 @@ function ChatView({
     <>
       {showOwnerLogin && (
         <OwnerLoginModal
-          onSuccess={() => setShowOwnerLogin(false)}
-          onClose={() => setShowOwnerLogin(false)}
+          onSuccess={() => {
+            setShowOwnerLogin(false)
+            const retry = retryAfterLogin.current
+            retryAfterLogin.current = null
+            retry?.()
+          }}
+          onClose={() => { retryAfterLogin.current = null; setShowOwnerLogin(false) }}
         />
       )}
       <main className="chat">
@@ -614,7 +631,7 @@ function ChatView({
             requests={pendingJoins}
             members={members}
             onDone={() => { refreshPendingJoins(); refreshMembers() }}
-            onOwnerAuthRequired={() => setShowOwnerLogin(true)}
+            onOwnerAuthRequired={(retry) => { retryAfterLogin.current = retry ?? null; setShowOwnerLogin(true) }}
           />
         )}
         <h3>{t('members.title')}</h3>
@@ -693,7 +710,7 @@ function PendingApprovalPanel({
   requests: PendingJoin[]
   members: Member[]
   onDone: () => void
-  onOwnerAuthRequired?: () => void
+  onOwnerAuthRequired?: (retry?: () => void) => void
 }) {
   const { t } = useI18n()
   // Per-request local state: nickname input, selected bind uid, reject reason
@@ -713,12 +730,11 @@ function PendingApprovalPanel({
     return match?.uid ?? ''
   }
 
-  const handleOwnerError = (err: unknown, requestId: string) => {
-    const msg = (err as Error).message
-    if (msg.includes('401') || msg.includes('403') || msg.includes('session') || msg.includes('owner')) {
-      onOwnerAuthRequired?.()
+  const handleOwnerError = (err: unknown, requestId: string, retry: () => void) => {
+    if (isAuthError(err)) {
+      onOwnerAuthRequired?.(retry)
     } else {
-      setErrors((prev) => ({ ...prev, [requestId]: msg }))
+      setErrors((prev) => ({ ...prev, [requestId]: (err as Error).message }))
     }
   }
 
@@ -730,7 +746,7 @@ function PendingApprovalPanel({
       })
       onDone()
     } catch (err) {
-      handleOwnerError(err, req.request_id)
+      handleOwnerError(err, req.request_id, () => approveNew(req))
     }
   }
 
@@ -744,7 +760,7 @@ function PendingApprovalPanel({
       })
       onDone()
     } catch (err) {
-      handleOwnerError(err, req.request_id)
+      handleOwnerError(err, req.request_id, () => approveBind(req))
     }
   }
 
@@ -753,7 +769,7 @@ function PendingApprovalPanel({
       await api.rejectPendingJoin(roomId, req.request_id, token, reasons[req.request_id])
       onDone()
     } catch (err) {
-      handleOwnerError(err, req.request_id)
+      handleOwnerError(err, req.request_id, () => reject(req))
     }
   }
 
