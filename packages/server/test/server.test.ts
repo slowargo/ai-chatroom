@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join as pathJoin } from 'node:path'
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { createApp } from '../src/app.js'
-import { RuntimeConfig, checkSecureBind, hashOwnerPassword, loadServerConfig, verifyOwnerPassword } from '../src/config.js'
+import { RuntimeConfig, checkSecureBind, hashAdminPassword, loadServerConfig, verifyAdminPassword } from '../src/config.js'
 import { openDb } from '../src/db.js'
 import { Hub } from '../src/hub.js'
 import { Llm } from '../src/llm.js'
@@ -690,27 +690,27 @@ describe('access password', () => {
   })
 })
 
-// ---- owner auth: login / logout / ownerOnly middleware ----
+// ---- admin auth: login / logout / adminOnly middleware ----
 
-describe('owner auth — login / logout / ownerOnly', () => {
-  const OWNER_PW = 'super-secret-pw'
-  let ownerStore: Store
-  let ownerApp: App
-  let ownerHash: string
+describe('admin auth — login / logout / adminOnly', () => {
+  const ADMIN_PW = 'super-secret-pw'
+  let adminStore: Store
+  let adminApp: App
+  let adminHash: string
 
   beforeAll(async () => {
     // hash once for the whole suite (scrypt is intentionally slow)
-    ownerHash = await hashOwnerPassword(OWNER_PW)
+    adminHash = await hashAdminPassword(ADMIN_PW)
   })
 
   beforeEach(() => {
-    ownerStore = new Store(openDb(':memory:'), { brakeAfter: 3 })
-    ownerApp = createApp({
-      store: ownerStore,
+    adminStore = new Store(openDb(':memory:'), { brakeAfter: 3 })
+    adminApp = createApp({
+      store: adminStore,
       hub: new Hub(),
       llm: new Llm(),
       pollWindowMs: 100,
-      ownerPasswordHash: ownerHash,
+      adminPasswordHash: adminHash,
     })
   })
 
@@ -718,7 +718,7 @@ describe('owner auth — login / logout / ownerOnly', () => {
     const headers = new Headers(init?.headers)
     if (init?.body) headers.set('content-type', 'application/json')
     if (init?.token) headers.set('authorization', `Bearer ${init.token}`)
-    return ownerApp.request(path, { ...init, headers })
+    return adminApp.request(path, { ...init, headers })
   }
 
   async function login(password: string) {
@@ -728,7 +728,7 @@ describe('owner auth — login / logout / ownerOnly', () => {
   // ---- login ----
 
   it('login with correct password returns session_token', async () => {
-    const res = await login(OWNER_PW)
+    const res = await login(ADMIN_PW)
     expect(res.status).toBe(201)
     const body = await res.json() as any
     expect(typeof body.session_token).toBe('string')
@@ -740,13 +740,13 @@ describe('owner auth — login / logout / ownerOnly', () => {
     expect(res.status).toBe(401)
   })
 
-  it('login returns 400 when owner password is not configured', async () => {
+  it('login returns 400 when admin password is not configured', async () => {
     const localApp = createApp({
       store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
       hub: new Hub(),
       llm: new Llm(),
       pollWindowMs: 100,
-      // ownerPasswordHash intentionally omitted → local mode
+      // adminPasswordHash intentionally omitted → local mode
     })
     const res = await localApp.request('/api/auth/login', {
       method: 'POST',
@@ -756,17 +756,17 @@ describe('owner auth — login / logout / ownerOnly', () => {
     expect(res.status).toBe(400)
   })
 
-  // ---- ownerOnly with password set: only session tokens pass ----
+  // ---- adminOnly with password set: only session tokens pass ----
 
-  it('ownerOnly with password set: valid session token passes POST /api/rooms', async () => {
-    const { session_token } = await login(OWNER_PW).then((r) => r.json()) as any
+  it('adminOnly with password set: valid session token passes POST /api/rooms', async () => {
+    const { session_token } = await login(ADMIN_PW).then((r) => r.json()) as any
     const res = await oapi('/api/rooms', { method: 'POST', body: '{}', token: session_token })
     expect(res.status).toBe(201)
   })
 
-  it('ownerOnly with password set: participant token is rejected (red-line)', async () => {
+  it('adminOnly with password set: participant token is rejected (red-line)', async () => {
     // Get a session token to create a room, then join to get a participant token
-    const { session_token } = await login(OWNER_PW).then((r) => r.json()) as any
+    const { session_token } = await login(ADMIN_PW).then((r) => r.json()) as any
     const room = await oapi('/api/rooms', { method: 'POST', body: '{}', token: session_token })
       .then((r) => r.json()) as any
     const joined = await oapi(`/api/rooms/${room.id}/join`, {
@@ -774,12 +774,12 @@ describe('owner auth — login / logout / ownerOnly', () => {
       body: JSON.stringify({ nickname: 'alice', type: 'human' }),
     }).then((r) => r.json()) as any
 
-    // participant token must NOT pass ownerOnly when password is set
+    // participant token must NOT pass adminOnly when password is set
     const res = await oapi('/api/rooms', { method: 'POST', body: '{}', token: joined.token })
     expect(res.status).toBe(403)
   })
 
-  it('ownerOnly with password set: no token returns 401', async () => {
+  it('adminOnly with password set: no token returns 401', async () => {
     const res = await oapi('/api/rooms', { method: 'POST', body: '{}' })
     expect(res.status).toBe(401)
   })
@@ -787,7 +787,7 @@ describe('owner auth — login / logout / ownerOnly', () => {
   // ---- logout ----
 
   it('logout invalidates the session token', async () => {
-    const { session_token } = await login(OWNER_PW).then((r) => r.json()) as any
+    const { session_token } = await login(ADMIN_PW).then((r) => r.json()) as any
 
     // Token works before logout
     const before = await oapi('/api/rooms', { method: 'POST', body: '{}', token: session_token })
@@ -805,8 +805,8 @@ describe('owner auth — login / logout / ownerOnly', () => {
   // ---- logout-all ----
 
   it('logout-all invalidates all sessions', async () => {
-    const { session_token: t1 } = await login(OWNER_PW).then((r) => r.json()) as any
-    const { session_token: t2 } = await login(OWNER_PW).then((r) => r.json()) as any
+    const { session_token: t1 } = await login(ADMIN_PW).then((r) => r.json()) as any
+    const { session_token: t2 } = await login(ADMIN_PW).then((r) => r.json()) as any
 
     // Both tokens work
     expect((await oapi('/api/rooms', { method: 'POST', body: '{}', token: t1 })).status).toBe(201)
@@ -838,7 +838,7 @@ describe('owner auth — login / logout / ownerOnly', () => {
     expect(res.status).toBe(201)
   })
 
-  it('local mode: human participant token passes ownerOnly', async () => {
+  it('local mode: human participant token passes adminOnly', async () => {
     const localApp = createApp({
       store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
       hub: new Hub(),
@@ -859,7 +859,7 @@ describe('owner auth — login / logout / ownerOnly', () => {
       body: JSON.stringify({ nickname: 'alice', type: 'human' }),
     })).json() as any
 
-    // Human participant token passes ownerOnly in local mode (approve pending join)
+    // Human participant token passes adminOnly in local mode (approve pending join)
     const pendingRes = await localApp.request(`/api/rooms/${room.id}/join`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -878,7 +878,7 @@ describe('owner auth — login / logout / ownerOnly', () => {
     expect(approveRes.status).toBe(200)
   })
 
-  it('local mode: agent participant token is rejected by ownerOnly', async () => {
+  it('local mode: agent participant token is rejected by adminOnly', async () => {
     const localApp = createApp({
       store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
       hub: new Hub(),
@@ -914,7 +914,7 @@ describe('owner auth — login / logout / ownerOnly', () => {
       body: JSON.stringify({ action: 'new' }),
     })).json() as any
 
-    // Agent token must NOT pass ownerOnly even in local mode
+    // Agent token must NOT pass adminOnly even in local mode
     const res = await localApp.request('/api/rooms', {
       method: 'POST',
       headers: {
@@ -926,7 +926,7 @@ describe('owner auth — login / logout / ownerOnly', () => {
     expect(res.status).toBe(403)
   })
 
-  // ---- access password + ownerOnly: x-access-password header, not query ----
+  // ---- access password + adminOnly: x-access-password header, not query ----
 
   it('access password gate: header works, ?password= query does not', async () => {
     const gatedApp = createApp({
@@ -966,29 +966,29 @@ describe('owner auth — login / logout / ownerOnly', () => {
 
 // ---- P0b · hardening ----
 
-describe('P0b — owner password hashing (async)', () => {
-  it('hashOwnerPassword + verifyOwnerPassword round-trips correctly', async () => {
-    const hash = await hashOwnerPassword('correct horse battery staple')
+describe('P0b — admin password hashing (async)', () => {
+  it('hashAdminPassword + verifyAdminPassword round-trips correctly', async () => {
+    const hash = await hashAdminPassword('correct horse battery staple')
     expect(hash).toMatch(/^[0-9a-f]+:[0-9a-f]+$/)
-    expect(await verifyOwnerPassword('correct horse battery staple', hash)).toBe(true)
-    expect(await verifyOwnerPassword('wrong password', hash)).toBe(false)
+    expect(await verifyAdminPassword('correct horse battery staple', hash)).toBe(true)
+    expect(await verifyAdminPassword('wrong password', hash)).toBe(false)
   })
 
-  it('verifyOwnerPassword returns false for malformed stored hashes', async () => {
-    expect(await verifyOwnerPassword('x', '')).toBe(false)
-    expect(await verifyOwnerPassword('x', 'no-colon-here')).toBe(false)
-    expect(await verifyOwnerPassword('x', 'salt:')).toBe(false)
+  it('verifyAdminPassword returns false for malformed stored hashes', async () => {
+    expect(await verifyAdminPassword('x', '')).toBe(false)
+    expect(await verifyAdminPassword('x', 'no-colon-here')).toBe(false)
+    expect(await verifyAdminPassword('x', 'salt:')).toBe(false)
   })
 
   it('a config-stored (pre-computed) hash can authenticate login', async () => {
-    // Simulate the "pre-stored hash" path: hash is computed offline and passed as ownerPasswordHash.
-    const preStored = await hashOwnerPassword('stored-pw')
+    // Simulate the "pre-stored hash" path: hash is computed offline and passed as adminPasswordHash.
+    const preStored = await hashAdminPassword('stored-pw')
     const app = createApp({
       store: new Store(openDb(':memory:'), { brakeAfter: 3 }),
       hub: new Hub(),
       llm: new Llm(),
       pollWindowMs: 100,
-      ownerPasswordHash: preStored,
+      adminPasswordHash: preStored,
     })
     const res = await app.request('/api/auth/login', {
       method: 'POST',
@@ -1003,33 +1003,33 @@ describe('P0b — owner password hashing (async)', () => {
 
 describe('P0b — default-deny secure bind (checkSecureBind)', () => {
   it('allows loopback host with no auth', () => {
-    expect(checkSecureBind({ host: '127.0.0.1', accessPassword: null, ownerPasswordHash: null })).toBeNull()
-    expect(checkSecureBind({ host: 'localhost', accessPassword: null, ownerPasswordHash: null })).toBeNull()
-    expect(checkSecureBind({ host: '::1', accessPassword: null, ownerPasswordHash: null })).toBeNull()
+    expect(checkSecureBind({ host: '127.0.0.1', accessPassword: null, adminPasswordHash: null })).toBeNull()
+    expect(checkSecureBind({ host: 'localhost', accessPassword: null, adminPasswordHash: null })).toBeNull()
+    expect(checkSecureBind({ host: '::1', accessPassword: null, adminPasswordHash: null })).toBeNull()
   })
 
   it('refuses non-loopback host with no auth', () => {
-    const err = checkSecureBind({ host: '0.0.0.0', accessPassword: null, ownerPasswordHash: null })
+    const err = checkSecureBind({ host: '0.0.0.0', accessPassword: null, adminPasswordHash: null })
     expect(err).toBeTruthy()
     expect(err).toContain('Refusing to start')
   })
 
   it('allows non-loopback host when an access password is set', () => {
-    expect(checkSecureBind({ host: '0.0.0.0', accessPassword: 'pw', ownerPasswordHash: null })).toBeNull()
+    expect(checkSecureBind({ host: '0.0.0.0', accessPassword: 'pw', adminPasswordHash: null })).toBeNull()
   })
 
-  it('allows non-loopback host when an owner password is set', () => {
-    expect(checkSecureBind({ host: '0.0.0.0', accessPassword: null, ownerPasswordHash: 'salt:hash' })).toBeNull()
+  it('allows non-loopback host when an admin password is set', () => {
+    expect(checkSecureBind({ host: '0.0.0.0', accessPassword: null, adminPasswordHash: 'salt:hash' })).toBeNull()
   })
 
   it('allows non-loopback host with no auth when explicitly overridden', () => {
     expect(
-      checkSecureBind({ host: '0.0.0.0', accessPassword: null, ownerPasswordHash: null, allowInsecure: true }),
+      checkSecureBind({ host: '0.0.0.0', accessPassword: null, adminPasswordHash: null, allowInsecure: true }),
     ).toBeNull()
   })
 
   it('refuses a concrete public-looking address with no auth', () => {
-    const err = checkSecureBind({ host: '192.168.1.50', accessPassword: null, ownerPasswordHash: null })
+    const err = checkSecureBind({ host: '192.168.1.50', accessPassword: null, adminPasswordHash: null })
     expect(err).toBeTruthy()
   })
 })
@@ -1074,11 +1074,11 @@ describe('P1a — participants.role migration backfill', () => {
 })
 
 describe('P1a — owner in-room identity (session-aware join)', () => {
-  const OWNER_PW = 'p1a-owner-pw'
-  let ownerHash: string
+  const ADMIN_PW = 'p1a-owner-pw'
+  let adminHash: string
 
   beforeAll(async () => {
-    ownerHash = await hashOwnerPassword(OWNER_PW)
+    adminHash = await hashAdminPassword(ADMIN_PW)
   })
 
   function pwApp() {
@@ -1087,7 +1087,7 @@ describe('P1a — owner in-room identity (session-aware join)', () => {
       hub: new Hub(),
       llm: new Llm(),
       pollWindowMs: 100,
-      ownerPasswordHash: ownerHash,
+      adminPasswordHash: adminHash,
     })
   }
   function localApp() {
@@ -1104,7 +1104,7 @@ describe('P1a — owner in-room identity (session-aware join)', () => {
     return app.request(path, { method: 'POST', headers, body: JSON.stringify(body) })
   }
   async function getSession(app: App) {
-    const res = await jpost(app, '/api/auth/login', { password: OWNER_PW })
+    const res = await jpost(app, '/api/auth/login', { password: ADMIN_PW })
     return (await res.json() as { session_token: string }).session_token
   }
   async function createRoomViaSession(app: App, session: string) {
@@ -1253,16 +1253,16 @@ describe('P1a — owner in-room identity (session-aware join)', () => {
 // ---- P1b · admin settings + session management ----
 
 describe('P1b — admin (sessions / password / settings)', () => {
-  const OWNER_PW = 'p1b-owner-pw'
-  let ownerHash: string
+  const ADMIN_PW = 'p1b-owner-pw'
+  let adminHash: string
 
   beforeAll(async () => {
-    ownerHash = await hashOwnerPassword(OWNER_PW)
+    adminHash = await hashAdminPassword(ADMIN_PW)
   })
 
   /** Build an app with an explicit RuntimeConfig (no-op persist so tests never touch config.json). */
   function adminApp(opts: {
-    ownerHash?: string | null
+    adminHash?: string | null
     accessPassword?: string | null
     brakeAfter?: number
     host?: string
@@ -1273,12 +1273,12 @@ describe('P1b — admin (sessions / password / settings)', () => {
     const config = new RuntimeConfig(
       {
         accessPassword: opts.accessPassword ?? null,
-        ownerPasswordHash: opts.ownerHash === undefined ? ownerHash : opts.ownerHash,
+        adminPasswordHash: opts.adminHash === undefined ? adminHash : opts.adminHash,
         brakeAfter: opts.brakeAfter ?? 3,
         port: 0,
         host: opts.host ?? '127.0.0.1',
         envPinned: {
-          ownerPasswordHash: false,
+          adminPasswordHash: false,
           accessPassword: false,
           brakeAfter: false,
           ...opts.envPinned,
@@ -1299,7 +1299,7 @@ describe('P1b — admin (sessions / password / settings)', () => {
   }
 
   async function loginSession(app: App) {
-    const res = await req(app, '/api/auth/login', { method: 'POST', body: JSON.stringify({ password: OWNER_PW }) })
+    const res = await req(app, '/api/auth/login', { method: 'POST', body: JSON.stringify({ password: ADMIN_PW }) })
     return (await res.json() as { session_token: string }).session_token
   }
 
@@ -1307,7 +1307,7 @@ describe('P1b — admin (sessions / password / settings)', () => {
 
   it('GET /api/auth/mode reports password mode', async () => {
     expect((await (await req(adminApp().app, '/api/auth/mode')).json() as any).password_mode).toBe(true)
-    expect((await (await req(adminApp({ ownerHash: null }).app, '/api/auth/mode')).json() as any).password_mode).toBe(false)
+    expect((await (await req(adminApp({ adminHash: null }).app, '/api/auth/mode')).json() as any).password_mode).toBe(false)
   })
 
   // ---- session management ----
@@ -1330,7 +1330,7 @@ describe('P1b — admin (sessions / password / settings)', () => {
     const other = list.find((s) => !s.current)!
     const del = await req(app, `/api/auth/sessions/${other.id}`, { method: 'DELETE', token: s1 })
     expect(del.status).toBe(204)
-    // s1 still valid, s2 (the revoked one) now rejected on an ownerOnly route
+    // s1 still valid, s2 (the revoked one) now rejected on an adminOnly route
     expect((await req(app, '/api/rooms', { method: 'POST', body: '{}', token: s1 })).status).toBe(201)
     expect((await req(app, '/api/rooms', { method: 'POST', body: '{}', token: s2 })).status).toBe(403)
   })
@@ -1346,18 +1346,18 @@ describe('P1b — admin (sessions / password / settings)', () => {
     expect(after >= before).toBe(true)
   })
 
-  // ---- change owner password ----
+  // ---- change admin password ----
 
   it('change password: correct old password rotates the credential', async () => {
     const { app } = adminApp()
     const session = await loginSession(app)
     const res = await req(app, '/api/auth/password', {
       method: 'POST', token: session,
-      body: JSON.stringify({ old_password: OWNER_PW, new_password: 'brand-new-pw' }),
+      body: JSON.stringify({ old_password: ADMIN_PW, new_password: 'brand-new-pw' }),
     })
     expect(res.status).toBe(200)
     // old password no longer logs in, new one does
-    expect((await req(app, '/api/auth/login', { method: 'POST', body: JSON.stringify({ password: OWNER_PW }) })).status).toBe(401)
+    expect((await req(app, '/api/auth/login', { method: 'POST', body: JSON.stringify({ password: ADMIN_PW }) })).status).toBe(401)
     expect((await req(app, '/api/auth/login', { method: 'POST', body: JSON.stringify({ password: 'brand-new-pw' }) })).status).toBe(201)
   })
 
@@ -1376,33 +1376,33 @@ describe('P1b — admin (sessions / password / settings)', () => {
     const session = await loginSession(app)
     const res = await req(app, '/api/auth/password', {
       method: 'POST', token: session,
-      body: JSON.stringify({ old_password: OWNER_PW, new_password: '' }),
+      body: JSON.stringify({ old_password: ADMIN_PW, new_password: '' }),
     })
     expect(res.status).toBe(400)
   })
 
-  it('change password: rejected (409) when the owner password is env-pinned', async () => {
-    const { app } = adminApp({ envPinned: { ownerPasswordHash: true } })
+  it('change password: rejected (409) when the admin password is env-pinned', async () => {
+    const { app } = adminApp({ envPinned: { adminPasswordHash: true } })
     const session = await loginSession(app)
     const res = await req(app, '/api/auth/password', {
       method: 'POST', token: session,
-      body: JSON.stringify({ old_password: OWNER_PW, new_password: 'brand-new-pw' }),
+      body: JSON.stringify({ old_password: ADMIN_PW, new_password: 'brand-new-pw' }),
     })
     expect(res.status).toBe(409)
   })
 
-  it('change password: requires owner (no session → 401)', async () => {
+  it('change password: requires admin (no session → 401)', async () => {
     const { app } = adminApp()
     const res = await req(app, '/api/auth/password', {
       method: 'POST',
-      body: JSON.stringify({ old_password: OWNER_PW, new_password: 'x' }),
+      body: JSON.stringify({ old_password: ADMIN_PW, new_password: 'x' }),
     })
     expect(res.status).toBe(401)
   })
 
   // ---- settings ----
 
-  it('GET /api/admin/settings requires owner and returns the runtime knobs', async () => {
+  it('GET /api/admin/settings requires admin and returns the runtime knobs', async () => {
     const { app } = adminApp({ brakeAfter: 7 })
     expect((await req(app, '/api/admin/settings')).status).toBe(401) // no session
     const session = await loginSession(app)
@@ -1438,15 +1438,15 @@ describe('P1b — admin (sessions / password / settings)', () => {
     await req(app, '/api/admin/settings', { method: 'PATCH', token: session, body: JSON.stringify({ access_password: 'gate-pw' }) })
     expect((await req(app, '/api/rooms')).status).toBe(401) // no header now
     expect((await req(app, '/api/rooms', { accessPw: 'gate-pw' })).status).toBe(200)
-    // disable (loopback host + owner password → allowed)
+    // disable (loopback host + admin password → allowed)
     await req(app, '/api/admin/settings', { method: 'PATCH', token: session, accessPw: 'gate-pw', body: JSON.stringify({ access_password: null }) })
     expect((await req(app, '/api/rooms')).status).toBe(200)
   })
 
   it('PATCH cannot disable the access gate when that would expose a public, unauthenticated server', async () => {
-    // local mode (no owner password) + non-loopback bind + access gate on. Disabling would bypass
+    // local mode (no admin password) + non-loopback bind + access gate on. Disabling would bypass
     // the startup checkSecureBind guard, so it must be refused.
-    const { app } = adminApp({ ownerHash: null, accessPassword: 'gate-pw', host: '0.0.0.0' })
+    const { app } = adminApp({ adminHash: null, accessPassword: 'gate-pw', host: '0.0.0.0' })
     const res = await req(app, '/api/admin/settings', {
       method: 'PATCH', accessPw: 'gate-pw',
       body: JSON.stringify({ access_password: null }),

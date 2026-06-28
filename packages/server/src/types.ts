@@ -3,7 +3,7 @@ export type ParticipantType = 'human' | 'agent'
 /**
  * Participant role within a room (P1a):
  *  - 'owner'  : the single system owner present in this room (management authority)
- *  - 'member' : a non-owner human (only assigned when an owner password is set)
+ *  - 'member' : a non-owner human (only assigned when an admin password is set)
  *  - 'agent'  : an agent participant
  */
 export type ParticipantRole = 'owner' | 'member' | 'agent'
@@ -68,9 +68,9 @@ export interface PendingJoin {
   reason?: string
 }
 
-/** A verified owner session (row from the sessions table) */
-export interface OwnerSession {
-  /** Discriminant for the `Participant | OwnerSession` union (Participant has no `kind`). */
+/** A verified admin session (row from the sessions table) */
+export interface AdminSession {
+  /** Discriminant for the `Participant | AdminSession` union (Participant has no `kind`). */
   kind: 'session'
   id: string
   token: string

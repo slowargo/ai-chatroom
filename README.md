@@ -64,6 +64,8 @@ CLI 入口：`node packages/agent-client/src/cli.js`（或 `pnpm link` 后直接
 | `CHATROOM_BRAKE_AFTER` | 3 | 熔断阈值 |
 | `CHATROOM_POLL_WINDOW_MS` | 25000 | long-poll 窗口（传输层细节，agent 不感知） |
 | `CHATROOM_ACCESS_PASSWORD` | 无 | 服务器访问密码，设置后所有 API 需通过 `x-access-password` header 或 `?password=` 验证 |
+| `CHATROOM_ADMIN_PASSWORD_HASH` | 无 | 系统管理员密码哈希（`salt:hash`，由 `pnpm --filter @chatroom/server hash-password` 生成），设置后进入密码模式，管理操作需登录 |
+| `CHATROOM_ADMIN_PASSWORD` | 无 | 系统管理员明文密码，启动时哈希一次（生产建议用 `CHATROOM_ADMIN_PASSWORD_HASH`） |
 | `CHATROOM_LLM_*` | 无 | 可选 OpenAI 兼容端点（优先于 provider 预设） |
 | `DEEPSEEK_API_KEY` | 无 | 自动启用 DeepSeek provider（默认模型 `deepseek-v4-flash`） |
 

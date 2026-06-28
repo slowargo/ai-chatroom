@@ -34,11 +34,11 @@ export default function App() {
   const [rooms, setRooms] = useState<Room[]>([])
   const [roomId, setRoomId] = useState<string | null>(() => location.hash.slice(1) || null)
   const [showAdmin, setShowAdmin] = useState(false)
-  const [showOwnerLogin, setShowOwnerLogin] = useState(false)
-  // null while loading. password mode = owner login required; local mode = fully trusted (everyone owner).
+  const [showAdminLogin, setShowAdminLogin] = useState(false)
+  // null while loading. password mode = admin login required; local mode = fully trusted (everyone admin).
   const [passwordMode, setPasswordMode] = useState<boolean | null>(null)
   const [hasSession, setHasSession] = useState(() => !!loadSessionToken())
-  // Transient "you have been logged out" notice, shown after the owner logs out or revokes their
+  // Transient "you have been logged out" notice, shown after the admin logs out or revokes their
   // own current session. Auto-dismisses so it never lingers.
   const [loggedOut, setLoggedOut] = useState(false)
   useEffect(() => {
@@ -47,10 +47,10 @@ export default function App() {
     return () => clearTimeout(timer)
   }, [loggedOut])
 
-  // Explicit owner gating (replaces relying on silent 403s): in local mode everyone is owner; in
-  // password mode the owner is whoever holds a session token. A stale token still falls back to the
+  // Explicit admin gating (replaces relying on silent 403s): in local mode everyone is admin; in
+  // password mode the admin is whoever holds a session token. A stale token still falls back to the
   // 401/403 → login flow below.
-  const isOwner = passwordMode === false || hasSession
+  const isAdmin = passwordMode === false || hasSession
 
   useEffect(() => {
     api.authMode().then((m) => {
@@ -128,12 +128,12 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
-  // The action that triggered an owner-login prompt, replayed once login succeeds so the user does
+  // The action that triggered an admin-login prompt, replayed once login succeeds so the user does
   // not have to click twice. Held in a ref so replacing it never causes a re-render.
   const retryAfterLogin = useRef<(() => void) | null>(null)
-  const requireOwner = (retry: () => void) => {
+  const requireAdmin = (retry: () => void) => {
     retryAfterLogin.current = retry
-    setShowOwnerLogin(true)
+    setShowAdminLogin(true)
   }
 
   const createRoom = async () => {
@@ -142,7 +142,7 @@ export default function App() {
       setRooms(prev => prev.some(r => r.id === room.id) ? prev : [room, ...prev])
       location.hash = room.id
     } catch (err) {
-      if (isAuthError(err)) requireOwner(createRoom)
+      if (isAuthError(err)) requireAdmin(createRoom)
       else console.error(err)
     }
   }
@@ -154,7 +154,7 @@ export default function App() {
       if (roomId === id) location.hash = ''
       setRooms(prev => prev.filter(r => r.id !== id))
     } catch (err) {
-      if (isAuthError(err)) requireOwner(() => doDeleteRoom(id))
+      if (isAuthError(err)) requireAdmin(() => doDeleteRoom(id))
       else console.error(err)
     }
   }
@@ -170,25 +170,25 @@ export default function App() {
     <div className="layout">
       {loggedOut && (
         <div className="logout-notice" role="status" onClick={() => setLoggedOut(false)}>
-          {t('owner.loggedOut')}
+          {t('admin.loggedOut')}
         </div>
       )}
-      {showOwnerLogin && (
-        <OwnerLoginModal
+      {showAdminLogin && (
+        <AdminLoginModal
           onSuccess={() => {
-            setShowOwnerLogin(false)
+            setShowAdminLogin(false)
             setHasSession(true)
             const retry = retryAfterLogin.current
             retryAfterLogin.current = null
             retry?.()
           }}
-          onClose={() => { retryAfterLogin.current = null; setShowOwnerLogin(false) }}
+          onClose={() => { retryAfterLogin.current = null; setShowAdminLogin(false) }}
         />
       )}
       <aside className="sidebar">
         <header>
           <h1>{t('app.title')}</h1>
-          {isOwner && <button onClick={createRoom}>{t('room.new')}</button>}
+          {isAdmin && <button onClick={createRoom}>{t('room.new')}</button>}
         </header>
         <nav>
           {rooms.map((r) => (
@@ -198,7 +198,7 @@ export default function App() {
               </span>
               <span className="room-meta">
                 {t('room.messageCount', { count: r.last_seq })}
-                {isOwner && (
+                {isAdmin && (
                   <button className="room-delete" onClick={(e) => deleteRoom(e, r.id)} title={t('room.delete')}>×</button>
                 )}
               </span>
@@ -207,13 +207,13 @@ export default function App() {
         </nav>
         <footer>
           <LlmStatus />
-          {isOwner && (
+          {isAdmin && (
             <button className="link" onClick={() => setShowAdmin((v) => !v)}>
               {showAdmin ? t('nav.backToChat') : t('nav.admin')}
             </button>
           )}
           {passwordMode && !hasSession && (
-            <button className="link" onClick={() => setShowOwnerLogin(true)}>{t('owner.login')}</button>
+            <button className="link" onClick={() => setShowAdminLogin(true)}>{t('admin.login')}</button>
           )}
           <LanguageSwitcher />
           <span className="version">v{version}</span>
@@ -234,11 +234,11 @@ export default function App() {
 }
 
 /**
- * Modal dialog for owner login.
+ * Modal dialog for admin login.
  * On success, saves the session token to localStorage and calls onSuccess.
- * The token is then automatically picked up by ownerCredential() in api.ts.
+ * The token is then automatically picked up by adminCredential() in api.ts.
  */
-function OwnerLoginModal({ onSuccess, onClose }: { onSuccess: () => void; onClose: () => void }) {
+function AdminLoginModal({ onSuccess, onClose }: { onSuccess: () => void; onClose: () => void }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -273,14 +273,14 @@ function OwnerLoginModal({ onSuccess, onClose }: { onSuccess: () => void; onClos
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-        <h2>Owner Login</h2>
+        <h2>Admin Login</h2>
         {hasSession && (
           <p className="modal-hint">You have an active session. Log out to invalidate it.</p>
         )}
         <input
           ref={inputRef}
           type="password"
-          placeholder="Owner password"
+          placeholder="Admin password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && !loading && doLogin()}
@@ -450,8 +450,8 @@ function ChatView({
   const [pendingJoins, setPendingJoins] = useState<PendingJoin[]>([])
   const [text, setText] = useState('')
   const [error, setError] = useState('')
-  const [showOwnerLogin, setShowOwnerLogin] = useState(false)
-  // approval action to replay after a successful owner login (avoids a second click)
+  const [showAdminLogin, setShowAdminLogin] = useState(false)
+  // approval action to replay after a successful admin login (avoids a second click)
   const retryAfterLogin = useRef<(() => void) | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -598,15 +598,15 @@ function ChatView({
 
   return (
     <>
-      {showOwnerLogin && (
-        <OwnerLoginModal
+      {showAdminLogin && (
+        <AdminLoginModal
           onSuccess={() => {
-            setShowOwnerLogin(false)
+            setShowAdminLogin(false)
             const retry = retryAfterLogin.current
             retryAfterLogin.current = null
             retry?.()
           }}
-          onClose={() => { retryAfterLogin.current = null; setShowOwnerLogin(false) }}
+          onClose={() => { retryAfterLogin.current = null; setShowAdminLogin(false) }}
         />
       )}
       <main className="chat">
@@ -682,7 +682,7 @@ function ChatView({
             requests={pendingJoins}
             members={members}
             onDone={() => { refreshPendingJoins(); refreshMembers() }}
-            onOwnerAuthRequired={(retry) => { retryAfterLogin.current = retry ?? null; setShowOwnerLogin(true) }}
+            onAdminAuthRequired={(retry) => { retryAfterLogin.current = retry ?? null; setShowAdminLogin(true) }}
           />
         )}
         <h3>{t('members.title')}</h3>
@@ -754,14 +754,14 @@ function PendingApprovalPanel({
   requests,
   members,
   onDone,
-  onOwnerAuthRequired,
+  onAdminAuthRequired,
 }: {
   roomId: string
   token: string
   requests: PendingJoin[]
   members: Member[]
   onDone: () => void
-  onOwnerAuthRequired?: (retry?: () => void) => void
+  onAdminAuthRequired?: (retry?: () => void) => void
 }) {
   const { t } = useI18n()
   // Per-request local state: nickname input, selected bind uid, reject reason
@@ -781,9 +781,9 @@ function PendingApprovalPanel({
     return match?.uid ?? ''
   }
 
-  const handleOwnerError = (err: unknown, requestId: string, retry: () => void) => {
+  const handleAdminError = (err: unknown, requestId: string, retry: () => void) => {
     if (isAuthError(err)) {
-      onOwnerAuthRequired?.(retry)
+      onAdminAuthRequired?.(retry)
     } else {
       setErrors((prev) => ({ ...prev, [requestId]: (err as Error).message }))
     }
@@ -797,7 +797,7 @@ function PendingApprovalPanel({
       })
       onDone()
     } catch (err) {
-      handleOwnerError(err, req.request_id, () => approveNew(req))
+      handleAdminError(err, req.request_id, () => approveNew(req))
     }
   }
 
@@ -811,7 +811,7 @@ function PendingApprovalPanel({
       })
       onDone()
     } catch (err) {
-      handleOwnerError(err, req.request_id, () => approveBind(req))
+      handleAdminError(err, req.request_id, () => approveBind(req))
     }
   }
 
@@ -820,7 +820,7 @@ function PendingApprovalPanel({
       await api.rejectPendingJoin(roomId, req.request_id, token, reasons[req.request_id])
       onDone()
     } catch (err) {
-      handleOwnerError(err, req.request_id, () => reject(req))
+      handleAdminError(err, req.request_id, () => reject(req))
     }
   }
 
@@ -892,7 +892,7 @@ function PendingApprovalPanel({
 }
 
 /**
- * Owner admin panel (P1b). Only mounted when the App considers the viewer an owner. Sections that
+ * Admin panel (P1b). Only mounted when the App considers the viewer an admin. Sections that
  * only make sense in password mode (change password, session list) are hidden in local mode.
  */
 function AdminPanel({ passwordMode, onLoggedOut }: { passwordMode: boolean; onLoggedOut: () => void }) {
@@ -914,13 +914,13 @@ function AdminPanel({ passwordMode, onLoggedOut }: { passwordMode: boolean; onLo
     <main className="admin">
       <h2>{t('admin.title')}</h2>
       {error && <p className="error">{error}</p>}
-      {passwordMode && <PasswordSection envPinned={settings?.owner_password.env_pinned ?? false} />}
+      {passwordMode && <PasswordSection envPinned={settings?.admin_password.env_pinned ?? false} />}
       {passwordMode && <SessionsSection onSelfRevoked={onLoggedOut} />}
       {settings && <SettingsSection settings={settings} onChange={setSettings} />}
       <PersonaSection />
       {passwordMode && (
         <section className="admin-section">
-          <button className="link" onClick={logout}>{t('owner.logout')}</button>
+          <button className="link" onClick={logout}>{t('admin.logout')}</button>
         </section>
       )}
     </main>
@@ -949,7 +949,7 @@ function PasswordSection({ envPinned }: { envPinned: boolean }) {
 
   return (
     <section className="admin-section">
-      <h3>{t('admin.pw.title')}</h3>
+      <h3 title={t('admin.pw.titleTip')}>{t('admin.pw.title')}</h3>
       {envPinned ? (
         <p className="hint">{t('admin.pw.envPinned')}</p>
       ) : (
@@ -995,7 +995,7 @@ function SessionsSection({ onSelfRevoked }: { onSelfRevoked: () => void }) {
 
   return (
     <section className="admin-section">
-      <h3>{t('admin.sessions.title')}</h3>
+      <h3 title={t('admin.sessions.titleTip')}>{t('admin.sessions.title')}</h3>
       {sessions.length === 0 ? (
         <p className="hint">{t('admin.sessions.empty')}</p>
       ) : (
@@ -1082,7 +1082,7 @@ function SettingsSection({ settings, onChange }: { settings: AdminSettings; onCh
 
       {llm.enabled && (
         <div className="setting-row">
-          <label>{t('admin.settings.model')}</label>
+          <label title={t('admin.settings.modelTip')}>{t('admin.settings.model')}</label>
           <select value={llm.model ?? ''} onChange={(e) => switchModel(e.target.value)}>
             {modelOptions.map((m) => (
               <option key={m} value={m}>{m}</option>
@@ -1092,7 +1092,7 @@ function SettingsSection({ settings, onChange }: { settings: AdminSettings; onCh
       )}
 
       <div className="setting-row">
-        <label>{t('admin.settings.brake')}</label>
+        <label title={t('admin.settings.brakeTip')}>{t('admin.settings.brake')}</label>
         <input
           type="number"
           min={1}
@@ -1107,7 +1107,7 @@ function SettingsSection({ settings, onChange }: { settings: AdminSettings; onCh
       <p className="hint">{t('admin.settings.brakeHint')}</p>
 
       <div className="setting-row">
-        <label>{t('admin.settings.accessGate')}</label>
+        <label title={t('admin.settings.accessGateTip')}>{t('admin.settings.accessGate')}</label>
         <span className="badge">{gate.enabled ? t('admin.settings.accessOn') : t('admin.settings.accessOff')}</span>
       </div>
       {gate.env_pinned ? (
@@ -1163,7 +1163,7 @@ function PersonaSection() {
 
   return (
     <section className="admin-section">
-      <h3>{t('persona.title')}</h3>
+      <h3 title={t('persona.titleTip')}>{t('persona.title')}</h3>
       <p className="hint">{t('persona.hint')}</p>
       {personas.map((p) => (
         <div key={p.id} className="persona-card">

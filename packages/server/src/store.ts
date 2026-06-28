@@ -5,7 +5,7 @@ import type {
   AnnotatedEvent,
   ChatEvent,
   EventKind,
-  OwnerSession,
+  AdminSession,
   Participant,
   ParticipantRole,
   ParticipantType,
@@ -182,11 +182,11 @@ export class Store {
    * each other offline.
    *
    * P1a — owner identity:
-   *  - `asOwner` (caller verified a valid owner session): locate this room's single owner participant
+   *  - `asOwner` (caller verified a valid admin session): locate this room's single owner participant
    *    by role (NOT by nickname); if present, return it as-is (shared token, never rotated) so all of
    *    the owner's logged-in browsers share one in-room identity. If absent, create a fresh role=owner
    *    participant. The session token is never passed in as `input.token`.
-   *  - `localMode` (no owner password configured): a new human participant is created as role=owner
+   *  - `localMode` (no admin password configured): a new human participant is created as role=owner
    *    (zero-config "everyone is owner"); otherwise a new human is role=member.
    */
   joinRoom(
@@ -278,7 +278,7 @@ export class Store {
     }
 
     // Role assignment for a freshly created participant:
-    //   agent → 'agent'; human → 'owner' in local mode (no owner password), else 'member'.
+    //   agent → 'agent'; human → 'owner' in local mode (no admin password), else 'member'.
     const role: ParticipantRole =
       input.type === 'agent' ? 'agent' : input.localMode ? 'owner' : 'member'
     return this.createParticipant(roomId, {
@@ -616,11 +616,11 @@ export class Store {
     return pj
   }
 
-  // ---- owner sessions ----
+  // ---- admin sessions ----
 
-  /** Create a new owner session with a fresh token. Token uses same format as participant tokens. */
-  createSession(label = ''): OwnerSession {
-    const session: OwnerSession = {
+  /** Create a new admin session with a fresh token. Token uses same format as participant tokens. */
+  createSession(label = ''): AdminSession {
+    const session: AdminSession = {
       kind: 'session',
       id: ulid(),
       token: randomBytes(24).toString('base64url'),
@@ -635,17 +635,17 @@ export class Store {
   }
 
   /** Look up a session by its token. Returns undefined if not found. */
-  getSessionByToken(token: string): OwnerSession | undefined {
+  getSessionByToken(token: string): AdminSession | undefined {
     // `kind` is not a stored column; add it so the returned object carries the union discriminant.
-    const row = this.db.prepare('SELECT * FROM sessions WHERE token = ?').get(token) as Omit<OwnerSession, 'kind'> | undefined
+    const row = this.db.prepare('SELECT * FROM sessions WHERE token = ?').get(token) as Omit<AdminSession, 'kind'> | undefined
     return row ? { kind: 'session', ...row } : undefined
   }
 
-  /** List all owner sessions (login devices), newest first. */
-  listSessions(): OwnerSession[] {
+  /** List all admin sessions (login devices), newest first. */
+  listSessions(): AdminSession[] {
     const rows = this.db
       .prepare('SELECT * FROM sessions ORDER BY created_at DESC')
-      .all() as Omit<OwnerSession, 'kind'>[]
+      .all() as Omit<AdminSession, 'kind'>[]
     return rows.map((r) => ({ kind: 'session', ...r }))
   }
 

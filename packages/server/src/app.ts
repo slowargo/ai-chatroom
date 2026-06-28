@@ -8,8 +8,8 @@ import { extname, join, normalize } from 'node:path'
 import type { Hub } from './hub.js'
 import type { Llm } from './llm.js'
 import { ConflictError, ValidationError, type Store } from './store.js'
-import type { ChatEvent, OwnerSession, Participant, ParticipantType } from './types.js'
-import { RuntimeConfig, checkSecureBind, hashOwnerPassword, verifyOwnerPassword } from './config.js'
+import type { ChatEvent, AdminSession, Participant, ParticipantType } from './types.js'
+import { RuntimeConfig, checkSecureBind, hashAdminPassword, verifyAdminPassword } from './config.js'
 
 /** Resolve callbacks waiting for a pending join decision, keyed by request_id */
 const pendingJoinWaiters = new Map<string, ((result: unknown) => void)[]>()
@@ -28,18 +28,18 @@ export interface AppDeps {
    * headers), and the global /api/rooms/stream is disabled (403) since it has no token to validate.
    */
   accessPassword?: string | null
-  /** scrypt hash of the owner password ("salt:hash" hex). If absent, local mode: any human participant token is owner. */
-  ownerPasswordHash?: string | null
+  /** scrypt hash of the admin password ("salt:hash" hex). If absent, local mode: any human participant token has admin access. */
+  adminPasswordHash?: string | null
   /**
-   * Mutable, persisted runtime config (owner password hash / access password / brake threshold).
-   * When provided it is the source of truth and the legacy accessPassword/ownerPasswordHash above are
+   * Mutable, persisted runtime config (admin password hash / access password / brake threshold).
+   * When provided it is the source of truth and the legacy accessPassword/adminPasswordHash above are
    * ignored. When absent (legacy callers / tests), an internal holder is built from those fields with a
    * no-op persister so tests never touch config.json.
    */
   config?: RuntimeConfig
 }
 
-type Env = { Variables: { me: Participant | OwnerSession } }
+type Env = { Variables: { me: Participant | AdminSession } }
 
 // ---- in-process rate limiter for login endpoint ----
 interface RateLimitEntry {
@@ -126,17 +126,17 @@ export function createApp(deps: AppDeps) {
   const { store, hub, llm } = deps
   const pollWindowMs = deps.pollWindowMs ?? 25_000
   // Source of truth for runtime-mutable knobs. Read via getters so middleware/handlers always observe
-  // the current value (e.g. after the owner changes the password from /admin) rather than a snapshot.
+  // the current value (e.g. after the admin changes the password from /admin) rather than a snapshot.
   const config =
     deps.config ??
     new RuntimeConfig(
       {
         accessPassword: deps.accessPassword ?? null,
-        ownerPasswordHash: deps.ownerPasswordHash ?? null,
+        adminPasswordHash: deps.adminPasswordHash ?? null,
         brakeAfter: 3,
         port: 0,
         host: '127.0.0.1',
-        envPinned: { ownerPasswordHash: false, accessPassword: false, brakeAfter: false },
+        envPinned: { adminPasswordHash: false, accessPassword: false, brakeAfter: false },
       },
       { allowInsecure: true, persist: () => {} },
     )
@@ -152,7 +152,7 @@ export function createApp(deps: AppDeps) {
   const lastTitledCount = new Map<string, number>()
 
   // Access-password gate. Always mounted; whether it actually checks is decided per-request by the
-  // current config.accessPassword (so the owner can toggle the gate at runtime from /admin). When no
+  // current config.accessPassword (so the admin can toggle the gate at runtime from /admin). When no
   // password is set the gate is a no-op, identical to not mounting it.
   const sha256 = (s: string) => createHash('sha256').update(s).digest()
   app.use('/api/*', async (c, next) => {
@@ -191,46 +191,46 @@ export function createApp(deps: AppDeps) {
   })
 
   /**
-   * ownerOnly middleware (self-contained, method X per design).
+   * adminOnly middleware (self-contained, method X per design).
    * Does NOT depend on the auth middleware. Replaces auth+adminOnly on management routes.
    *
-   * Path is decided solely by startup config (ownerPasswordHash), never by request fields:
-   *   - ownerPasswordHash set  → look up sessions table; hit → pass; else → 403
-   *   - ownerPasswordHash null → local mode (zero-config):
+   * Path is decided solely by startup config (adminPasswordHash), never by request fields:
+   *   - adminPasswordHash set  → look up sessions table; hit → pass; else → 403
+   *   - adminPasswordHash null → local mode (zero-config):
    *       if token provided: must be a valid human participant token → pass; else 403
    *       if no token: pass unconditionally (local = fully trusted, no credentials required)
    *
-   * Red line: when ownerPasswordHash is set, NO participant token may pass ownerOnly.
+   * Red line: when adminPasswordHash is set, NO participant token may pass adminOnly.
    */
-  const ownerOnly = createMiddleware<Env>(async (c, next) => {
-    // ownerOnly routes are regular HTTP (never SSE), so the token comes from the Authorization
+  const adminOnly = createMiddleware<Env>(async (c, next) => {
+    // adminOnly routes are regular HTTP (never SSE), so the token comes from the Authorization
     // header only — no ?token= query fallback (which would leak tokens into proxy logs / history).
     const token = c.req.header('authorization')?.replace(/^Bearer\s+/i, '')
 
-    if (config.ownerPasswordHash) {
+    if (config.adminPasswordHash) {
       // Password mode: a valid session token is required
-      if (!token) return c.json({ error: 'owner session token required' }, 401)
+      if (!token) return c.json({ error: 'admin session token required' }, 401)
       const session = store.getSessionByToken(token)
-      if (!session) return c.json({ error: 'owner session required' }, 403)
+      if (!session) return c.json({ error: 'admin session required' }, 403)
       // Update last_used_at
       store.touchSession(session.id)
       c.set('me', session)
       await next()
     } else {
-      // Local mode (zero-config): no owner password set means fully trusted.
+      // Local mode (zero-config): no admin password set means fully trusted.
       // If a token is provided, validate it as a human participant token to set 'me'.
       // If no token is provided, allow through unconditionally (backwards-compatible local behavior).
       //
       // TRUST-MODEL NOTE: in local mode the management/approval routes accept a request with no
       // token at all. This is an ACCEPTED trade-off, not a gap: local mode is defined as a fully
       // trusted, single-operator environment (loopback bind, no public exposure). Hardening for
-      // untrusted/public deployments is done by setting an owner password (session auth) and/or an
+      // untrusted/public deployments is done by setting an admin password (session auth) and/or an
       // access password — see docs/owner-role-and-password-model.md. We deliberately do NOT add
       // route-level special-casing to weaken this; the auth path is decided solely by startup config.
       if (token) {
         const participant = store.getParticipantByToken(token)
         if (!participant) return c.json({ error: 'invalid token' }, 403)
-        if (participant.type !== 'human') return c.json({ error: 'owner access required' }, 403)
+        if (participant.type !== 'human') return c.json({ error: 'admin access required' }, 403)
         c.set('me', participant)
       }
       await next()
@@ -247,16 +247,16 @@ export function createApp(deps: AppDeps) {
   // ---- auth (login / logout / logout-all) ----
 
   /**
-   * Public: whether the server runs in password mode (owner login required) or local mode.
-   * Lets the web decide whether to show owner-management UI explicitly (role-based) instead of
+   * Public: whether the server runs in password mode (admin login required) or local mode.
+   * Lets the web decide whether to show admin-management UI explicitly (role-based) instead of
    * inferring it from a silent 403. Not sensitive — a 401 vs 200 on any management route reveals
    * the same thing.
    */
-  app.get('/api/auth/mode', (c) => c.json({ password_mode: !!config.ownerPasswordHash }))
+  app.get('/api/auth/mode', (c) => c.json({ password_mode: !!config.adminPasswordHash }))
 
   app.post('/api/auth/login', async (c) => {
-    if (!config.ownerPasswordHash) {
-      return c.json({ error: 'owner password is not configured' }, 400)
+    if (!config.adminPasswordHash) {
+      return c.json({ error: 'admin password is not configured' }, 400)
     }
     const ip = getClientIp(c)
     // Rate limit check
@@ -273,7 +273,7 @@ export function createApp(deps: AppDeps) {
     const body = (await c.req.json().catch(() => ({}))) as { password?: string }
     const password = body.password ?? ''
 
-    if (!(await verifyOwnerPassword(password, config.ownerPasswordHash))) {
+    if (!(await verifyAdminPassword(password, config.adminPasswordHash))) {
       recordLoginFailure(ip)
       return c.json({ error: 'invalid password' }, 401)
     }
@@ -285,8 +285,8 @@ export function createApp(deps: AppDeps) {
   })
 
   app.post('/api/auth/logout', async (c) => {
-    if (!config.ownerPasswordHash) {
-      return c.json({ error: 'owner password is not configured' }, 400)
+    if (!config.adminPasswordHash) {
+      return c.json({ error: 'admin password is not configured' }, 400)
     }
     const token = c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? ''
     if (!token) return c.json({ error: 'missing token' }, 401)
@@ -297,8 +297,8 @@ export function createApp(deps: AppDeps) {
   })
 
   app.post('/api/auth/logout-all', async (c) => {
-    if (!config.ownerPasswordHash) {
-      return c.json({ error: 'owner password is not configured' }, 400)
+    if (!config.adminPasswordHash) {
+      return c.json({ error: 'admin password is not configured' }, 400)
     }
     const token = c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? ''
     if (!token) return c.json({ error: 'missing token' }, 401)
@@ -323,8 +323,8 @@ export function createApp(deps: AppDeps) {
 
   // ---- session management (admin) ----
 
-  /** List active owner sessions (login devices). Never exposes the raw token. Marks the caller's own session. */
-  app.get('/api/auth/sessions', ownerOnly, (c) => {
+  /** List active admin sessions (login devices). Never exposes the raw token. Marks the caller's own session. */
+  app.get('/api/auth/sessions', adminOnly, (c) => {
     const me = c.get('me')
     const currentId = me && 'kind' in me && me.kind === 'session' ? me.id : null
     return c.json(
@@ -339,22 +339,22 @@ export function createApp(deps: AppDeps) {
   })
 
   /** Revoke a single session by id (kick one device). Revoking your own session logs you out. */
-  app.delete('/api/auth/sessions/:id', ownerOnly, (c) => {
+  app.delete('/api/auth/sessions/:id', adminOnly, (c) => {
     store.deleteSession(c.req.param('id'))
     return c.body(null, 204)
   })
 
   /**
-   * Change the owner password. Requires a valid owner session (ownerOnly, password mode) AND the
-   * current password — so a stolen session token alone cannot lock out the owner. The new hash is
+   * Change the admin password. Requires a valid admin session (adminOnly, password mode) AND the
+   * current password — so a stolen session token alone cannot lock out the admin. The new hash is
    * persisted via RuntimeConfig and takes effect immediately for new logins; existing sessions stay
    * valid (revoke them explicitly via logout-all if desired).
    */
-  app.post('/api/auth/password', ownerOnly, async (c) => {
-    if (!config.ownerPasswordHash) return c.json({ error: 'owner password is not configured' }, 400)
+  app.post('/api/auth/password', adminOnly, async (c) => {
+    if (!config.adminPasswordHash) return c.json({ error: 'admin password is not configured' }, 400)
     // A password fixed by an env var would be restored on restart, so a UI change would silently no-op.
-    if (config.envPinned.ownerPasswordHash) {
-      return c.json({ error: 'owner password is pinned by an environment variable; change it there instead' }, 409)
+    if (config.envPinned.adminPasswordHash) {
+      return c.json({ error: 'admin password is pinned by an environment variable; change it there instead' }, 409)
     }
     const body = (await c.req.json().catch(() => ({}))) as { old_password?: string; new_password?: string }
     const oldPw = body.old_password ?? ''
@@ -362,16 +362,16 @@ export function createApp(deps: AppDeps) {
     // Never allow clearing the password: that would flip password mode → local mode at runtime,
     // violating "auth path is decided solely by startup config".
     if (!newPw) return c.json({ error: 'new_password is required' }, 400)
-    if (!(await verifyOwnerPassword(oldPw, config.ownerPasswordHash))) {
+    if (!(await verifyAdminPassword(oldPw, config.adminPasswordHash))) {
       return c.json({ error: 'current password is incorrect' }, 401)
     }
-    config.setOwnerPasswordHash(await hashOwnerPassword(newPw))
+    config.setAdminPasswordHash(await hashAdminPassword(newPw))
     return c.json({ ok: true })
   })
 
   // ---- rooms ----
 
-  app.post('/api/rooms', ownerOnly, async (c) => {
+  app.post('/api/rooms', adminOnly, async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { title?: string; cwd?: string; machine_id?: string }
     // a fresh room has no events yet; include last_seq so clients can render the count without a refetch
     const room = { ...store.createRoom(body.title ?? '', { cwd: body.cwd, machine_id: body.machine_id }), last_seq: 0 }
@@ -427,7 +427,7 @@ export function createApp(deps: AppDeps) {
     return room ? c.json(room) : c.json({ error: 'room not found' }, 404)
   })
 
-  app.delete('/api/rooms/:id', ownerOnly, (c) => {
+  app.delete('/api/rooms/:id', adminOnly, (c) => {
     const roomId = c.req.param('id')
     const room = store.getRoom(roomId)
     if (!room) return c.json({ error: 'room not found' }, 404)
@@ -469,13 +469,13 @@ export function createApp(deps: AppDeps) {
     const persona = body.persona_id ? store.getPersona(body.persona_id) : undefined
     if (body.persona_id && !persona) return c.json({ error: 'persona not found' }, 404)
 
-    // P1a — owner (session-backed) join. Only when an owner password is configured AND the
-    // Authorization header carries a valid owner session token. The owner gets/keeps this room's
+    // P1a — owner (session-backed) join. Only when an admin password is configured AND the
+    // Authorization header carries a valid admin session token. The owner gets/keeps this room's
     // single role=owner participant, located by role (not nickname), shared across browsers.
     // CRITICAL: the session token is never passed as a participant token; it only flips `asOwner`.
     // On re-join the existing owner participant is returned as-is, so a changed nickname/persona
     // only takes effect on the first create.
-    if (config.ownerPasswordHash) {
+    if (config.adminPasswordHash) {
       const authToken = c.req.header('authorization')?.replace(/^Bearer\s+/i, '')
       const session = authToken ? store.getSessionByToken(authToken) : undefined
       if (session) {
@@ -542,13 +542,13 @@ export function createApp(deps: AppDeps) {
           type,
           persona_id: persona?.id ?? null,
           token: body.token ?? null,
-          // Credential-less nickname reclaim is only allowed in local mode. Once an owner password
+          // Credential-less nickname reclaim is only allowed in local mode. Once an admin password
           // is set, a colliding explicit nickname must NOT silently return the existing identity —
           // otherwise an unauthenticated client could reclaim another participant's token (e.g. join
           // with the owner's nickname and receive the owner's role=owner participant token).
-          reclaim: !autoNick && !config.ownerPasswordHash,
-          // local mode (no owner password) → a new human is role=owner; otherwise role=member
-          localMode: !config.ownerPasswordHash,
+          reclaim: !autoNick && !config.adminPasswordHash,
+          // local mode (no admin password) → a new human is role=owner; otherwise role=member
+          localMode: !config.adminPasswordHash,
         })
         break
       } catch (err) {
@@ -574,7 +574,7 @@ export function createApp(deps: AppDeps) {
 
   // ---- pending joins ----
 
-  app.get('/api/rooms/:id/pending-joins', ownerOnly, (c) => {
+  app.get('/api/rooms/:id/pending-joins', adminOnly, (c) => {
     const roomId = c.req.param('id')
     if (!store.getRoom(roomId)) return c.json({ error: 'room not found' }, 404)
     return c.json(
@@ -588,7 +588,7 @@ export function createApp(deps: AppDeps) {
     )
   })
 
-  app.post('/api/rooms/:id/pending-joins/:rid/approve', ownerOnly, async (c) => {
+  app.post('/api/rooms/:id/pending-joins/:rid/approve', adminOnly, async (c) => {
     const roomId = c.req.param('id')
     const rid = c.req.param('rid')
     if (!store.getRoom(roomId)) return c.json({ error: 'room not found' }, 404)
@@ -608,7 +608,7 @@ export function createApp(deps: AppDeps) {
     return c.json(pj)
   })
 
-  app.post('/api/rooms/:id/pending-joins/:rid/reject', ownerOnly, async (c) => {
+  app.post('/api/rooms/:id/pending-joins/:rid/reject', adminOnly, async (c) => {
     const roomId = c.req.param('id')
     const rid = c.req.param('rid')
     if (!store.getRoom(roomId)) return c.json({ error: 'room not found' }, 404)
@@ -667,7 +667,7 @@ export function createApp(deps: AppDeps) {
 
   app.post('/api/rooms/:id/messages', auth, async (c) => {
     const roomId = c.req.param('id')
-    // auth middleware guarantees a Participant here (room-scoped routes never carry an OwnerSession)
+    // auth middleware guarantees a Participant here (room-scoped routes never carry an AdminSession)
     const me = c.get('me') as Participant
     const body = (await c.req.json().catch(() => ({}))) as {
       text?: string
@@ -881,7 +881,7 @@ export function createApp(deps: AppDeps) {
 
   app.get('/api/personas', (c) => c.json(store.listPersonas()))
 
-  app.post('/api/personas', ownerOnly, async (c) => {
+  app.post('/api/personas', adminOnly, async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { name?: string; system_prompt?: string }
     const name = body.name?.trim()
     if (!name || !body.system_prompt) return c.json({ error: 'name and system_prompt are required' }, 400)
@@ -902,7 +902,7 @@ export function createApp(deps: AppDeps) {
     return c.json({ ...llm.info(), models })
   })
 
-  app.post('/api/llm/model', ownerOnly, async (c) => {
+  app.post('/api/llm/model', adminOnly, async (c) => {
     if (!llm.enabled()) return c.json({ error: 'llm is not configured' }, 400)
     const body = (await c.req.json().catch(() => ({}))) as { model?: string }
     const model = typeof body.model === 'string' ? body.model.trim() : ''
@@ -918,7 +918,7 @@ export function createApp(deps: AppDeps) {
     checkSecureBind({
       host: config.host,
       accessPassword: null,
-      ownerPasswordHash: config.ownerPasswordHash,
+      adminPasswordHash: config.adminPasswordHash,
       allowInsecure: config.allowInsecure,
     }) === null
 
@@ -933,18 +933,18 @@ export function createApp(deps: AppDeps) {
         env_pinned: config.envPinned.accessPassword,
         can_disable: canDisableAccessGate(),
       },
-      owner_password: { env_pinned: config.envPinned.ownerPasswordHash },
-      password_mode: !!config.ownerPasswordHash,
+      admin_password: { env_pinned: config.envPinned.adminPasswordHash },
+      password_mode: !!config.adminPasswordHash,
     }
   }
 
-  app.get('/api/admin/settings', ownerOnly, async (c) => c.json(await settingsView()))
+  app.get('/api/admin/settings', adminOnly, async (c) => c.json(await settingsView()))
 
   /**
    * Update runtime-mutable server settings. Each field is independently validated and persisted via
    * RuntimeConfig. Fields pinned by an env var are rejected (the env would win on restart).
    */
-  app.patch('/api/admin/settings', ownerOnly, async (c) => {
+  app.patch('/api/admin/settings', adminOnly, async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as {
       brake_after?: number
       access_password?: string | null
@@ -972,7 +972,7 @@ export function createApp(deps: AppDeps) {
       const disabling = pw === null || (typeof pw === 'string' && pw.trim() === '')
       if (disabling && !canDisableAccessGate()) {
         return c.json(
-          { error: 'cannot disable the access gate: the server is bound to a non-loopback address with no owner password, which would leave it publicly unauthenticated' },
+          { error: 'cannot disable the access gate: the server is bound to a non-loopback address with no admin password, which would leave it publicly unauthenticated' },
           409,
         )
       }

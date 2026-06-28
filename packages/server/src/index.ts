@@ -23,7 +23,7 @@ const serverConfig = await loadServerConfig()
 const bindError = checkSecureBind({
   host: serverConfig.host,
   accessPassword: serverConfig.accessPassword,
-  ownerPasswordHash: serverConfig.ownerPasswordHash,
+  adminPasswordHash: serverConfig.adminPasswordHash,
   allowInsecure: !!process.env.CHATROOM_ALLOW_INSECURE_BIND,
 })
 if (bindError) {
@@ -52,6 +52,6 @@ serve({ fetch: app.fetch, port, hostname }, (info) => {
   console.log(`db: ${dbPath}`)
   console.log(`web ui: ${existsSync(webDist) ? webDist : '(not built — run pnpm --filter @chatroom/web build)'}`)
   if (serverConfig.accessPassword) console.log('access password: enabled')
-  if (serverConfig.ownerPasswordHash) console.log('owner password: enabled (session auth mode)')
-  else console.log('owner password: not set (local mode — any human participant token has owner access)')
+  if (serverConfig.adminPasswordHash) console.log('admin password: enabled (session auth mode)')
+  else console.log('admin password: not set (local mode — any human participant token has admin access)')
 })

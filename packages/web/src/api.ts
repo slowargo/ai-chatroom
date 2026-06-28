@@ -64,7 +64,7 @@ export interface LlmInfo {
   models: string[]
 }
 
-/** One owner session (login device) as returned by /api/auth/sessions (token never exposed). */
+/** One admin session (login device) as returned by /api/auth/sessions (token never exposed). */
 export interface SessionInfo {
   id: string
   created_at: string
@@ -80,20 +80,20 @@ export interface AdminSettings {
   brake_after: number
   brake: { env_pinned: boolean }
   access_gate: { enabled: boolean; env_pinned: boolean; can_disable: boolean }
-  owner_password: { env_pinned: boolean }
+  admin_password: { env_pinned: boolean }
   password_mode: boolean
 }
 
-// ---- session token (owner auth) ----
+// ---- session token (admin auth) ----
 
 const SESSION_TOKEN_KEY = 'chatroom:session_token'
 
 /**
  * Cached server auth mode, populated by authMode(). null until first resolved.
  * Used to decide whether a stored session token is meaningful: in local mode the server never
- * consults the sessions table, so sending a session token only makes ownerOnly treat it as an
- * (invalid) participant token and 403 every owner request.
- * Mode is process-static (decided at server startup by ownerPasswordHash presence), so this cache
+ * consults the sessions table, so sending a session token only makes adminOnly treat it as an
+ * (invalid) participant token and 403 every admin request.
+ * Mode is process-static (decided at server startup by adminPasswordHash presence), so this cache
  * is intentionally never invalidated within a page session — a mode change only happens across a
  * server restart, after which the SPA reloads and re-fetches authMode.
  */
@@ -158,7 +158,7 @@ export class ApiError extends Error {
   }
 }
 
-/** True for auth failures on management routes (missing/invalid owner credential). */
+/** True for auth failures on management routes (missing/invalid admin credential). */
 export function isAuthError(err: unknown): boolean {
   return err instanceof ApiError && (err.status === 401 || err.status === 403)
 }
@@ -172,13 +172,13 @@ async function j<T>(res: Response): Promise<T> {
 /**
  * Build common headers for fetch calls.
  * - accessPassword  → x-access-password header (door guard)
- * - ownerToken      → Authorization: Bearer <session_token> (owner management routes)
+ * - adminToken      → Authorization: Bearer <session_token> (admin management routes)
  * - participantToken → Authorization: Bearer <participant_token> (room-scoped routes)
- * These are mutually exclusive for the Authorization header; owner takes precedence.
+ * These are mutually exclusive for the Authorization header; admin takes precedence.
  */
 function buildHeaders(opts: {
   body?: boolean
-  ownerToken?: string
+  adminToken?: string
   participantToken?: string
   accessPassword?: boolean
 } = {}): Record<string, string> {
@@ -187,13 +187,13 @@ function buildHeaders(opts: {
   if (opts.accessPassword !== false && _accessPassword) {
     headers['x-access-password'] = _accessPassword
   }
-  const token = opts.ownerToken ?? opts.participantToken
+  const token = opts.adminToken ?? opts.participantToken
   if (token) headers['authorization'] = `Bearer ${token}`
   return headers
 }
 
-/** Resolve the owner credential: session token if available, else fall back to participant token for local mode. */
-function ownerCredential(participantToken?: string): string | undefined {
+/** Resolve the admin credential: session token if available, else fall back to participant token for local mode. */
+function adminCredential(participantToken?: string): string | undefined {
   // Local mode: never send a stored session token — the server would treat it as an invalid
   // participant token and 403. Fall back to the participant token (or no token, which is allowed).
   if (_passwordMode === false) return participantToken ?? undefined
@@ -203,15 +203,15 @@ function ownerCredential(participantToken?: string): string | undefined {
 function post(path: string, body: unknown, token?: string) {
   return fetch(path, {
     method: 'POST',
-    headers: buildHeaders({ body: true, ownerToken: token }),
+    headers: buildHeaders({ body: true, adminToken: token }),
     body: JSON.stringify(body),
   })
 }
 
-function postOwner(path: string, body: unknown, participantToken?: string) {
+function postAdmin(path: string, body: unknown, participantToken?: string) {
   return fetch(path, {
     method: 'POST',
-    headers: buildHeaders({ body: true, ownerToken: ownerCredential(participantToken) }),
+    headers: buildHeaders({ body: true, adminToken: adminCredential(participantToken) }),
     body: JSON.stringify(body),
   })
 }
@@ -222,27 +222,27 @@ export const api = {
   personas: () => fetch('/api/personas', { headers: buildHeaders() }).then((r) => j<Persona[]>(r)),
   llm: () => fetch('/api/llm', { headers: buildHeaders() }).then((r) => j<LlmInfo>(r)),
 
-  // ---- owner management routes (need ownerOnly credential) ----
+  // ---- admin management routes (need adminOnly credential) ----
   createRoom: (title = '', participantToken?: string) =>
-    postOwner('/api/rooms', { title }, participantToken).then((r) => j<Room>(r)),
+    postAdmin('/api/rooms', { title }, participantToken).then((r) => j<Room>(r)),
   deleteRoom: (id: string, participantToken?: string) =>
     fetch(`/api/rooms/${id}`, {
       method: 'DELETE',
-      headers: buildHeaders({ ownerToken: ownerCredential(participantToken) }),
+      headers: buildHeaders({ adminToken: adminCredential(participantToken) }),
     }).then((r) => { if (!r.ok) throw new ApiError(r.status, `HTTP ${r.status}`) }),
   createPersona: (name: string, system_prompt: string, participantToken?: string) =>
-    postOwner('/api/personas', { name, system_prompt }, participantToken).then((r) => j<Persona>(r)),
+    postAdmin('/api/personas', { name, system_prompt }, participantToken).then((r) => j<Persona>(r)),
   setLlmModel: (model: string, participantToken?: string) =>
-    postOwner('/api/llm/model', { model }, participantToken).then((r) => j<Omit<LlmInfo, 'models'>>(r)),
+    postAdmin('/api/llm/model', { model }, participantToken).then((r) => j<Omit<LlmInfo, 'models'>>(r)),
   approvePendingJoin: (
     roomId: string,
     requestId: string,
     participantToken: string,
     body: { action: 'new' | 'bind'; nickname?: string; bind_uid?: string },
-  ) => postOwner(`/api/rooms/${roomId}/pending-joins/${requestId}/approve`, body, participantToken)
+  ) => postAdmin(`/api/rooms/${roomId}/pending-joins/${requestId}/approve`, body, participantToken)
     .then((r) => j<PendingJoin>(r)),
   rejectPendingJoin: (roomId: string, requestId: string, participantToken: string, reason?: string) =>
-    postOwner(`/api/rooms/${roomId}/pending-joins/${requestId}/reject`, { reason }, participantToken)
+    postAdmin(`/api/rooms/${roomId}/pending-joins/${requestId}/reject`, { reason }, participantToken)
       .then((r) => j<PendingJoin>(r)),
 
   // ---- room-scoped routes (need participant token, plus access password) ----
@@ -260,40 +260,40 @@ export const api = {
   sendMessage: (roomId: string, token: string, text: string) =>
     post(`/api/rooms/${roomId}/messages`, { text }, token).then((r) => j<{ msg_id: string; seq: number }>(r)),
   pendingJoins: (roomId: string, token: string) =>
-    // /pending-joins is an ownerOnly route → send the owner credential (session token in password
+    // /pending-joins is an adminOnly route → send the admin credential (session token in password
     // mode, participant token in local mode), same as createRoom/approve. Passing only the
-    // participant token would 403 in password mode and hide the approval panel from the owner.
+    // participant token would 403 in password mode and hide the approval panel from the admin.
     fetch(`/api/rooms/${roomId}/pending-joins`, {
-      headers: buildHeaders({ ownerToken: ownerCredential(token) }),
+      headers: buildHeaders({ adminToken: adminCredential(token) }),
     }).then((r) => j<PendingJoin[]>(r)),
 
-  // ---- admin: settings + session management (ownerOnly) ----
-  /** Public: whether the server requires owner login (password mode) or runs in local mode. */
+  // ---- admin: settings + session management (adminOnly) ----
+  /** Public: whether the server requires admin login (password mode) or runs in local mode. */
   authMode: () =>
     fetch('/api/auth/mode', { headers: buildHeaders() })
       .then((r) => j<{ password_mode: boolean }>(r))
       .then((m) => { _passwordMode = m.password_mode; return m }),
   adminSettings: () =>
-    fetch('/api/admin/settings', { headers: buildHeaders({ ownerToken: ownerCredential() }) })
+    fetch('/api/admin/settings', { headers: buildHeaders({ adminToken: adminCredential() }) })
       .then((r) => j<AdminSettings>(r)),
   updateAdminSettings: (body: { brake_after?: number; access_password?: string | null }) =>
     fetch('/api/admin/settings', {
       method: 'PATCH',
-      headers: buildHeaders({ body: true, ownerToken: ownerCredential() }),
+      headers: buildHeaders({ body: true, adminToken: adminCredential() }),
       body: JSON.stringify(body),
     }).then((r) => j<AdminSettings>(r)),
   changePassword: (old_password: string, new_password: string) =>
-    postOwner('/api/auth/password', { old_password, new_password }).then((r) => j<{ ok: true }>(r)),
+    postAdmin('/api/auth/password', { old_password, new_password }).then((r) => j<{ ok: true }>(r)),
   listSessions: () =>
-    fetch('/api/auth/sessions', { headers: buildHeaders({ ownerToken: ownerCredential() }) })
+    fetch('/api/auth/sessions', { headers: buildHeaders({ adminToken: adminCredential() }) })
       .then((r) => j<SessionInfo[]>(r)),
   revokeSession: (id: string) =>
     fetch(`/api/auth/sessions/${id}`, {
       method: 'DELETE',
-      headers: buildHeaders({ ownerToken: ownerCredential() }),
+      headers: buildHeaders({ adminToken: adminCredential() }),
     }).then((r) => { if (!r.ok) throw new ApiError(r.status, `HTTP ${r.status}`) }),
 
-  // ---- owner auth ----
+  // ---- admin auth ----
   login: (password: string) =>
     fetch('/api/auth/login', {
       method: 'POST',
