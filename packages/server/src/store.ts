@@ -259,6 +259,13 @@ export class Store {
       .get(roomId, input.nickname) as Participant | undefined
     if (existing) {
       if (input.reclaim) {
+        // Defense-in-depth: an owner's identity must never be reclaimed credential-less. In password
+        // mode app.ts already passes reclaim=false so this branch is unreachable, but the guard
+        // catches any future regression. Gated on !localMode so local mode (everyone is owner, and
+        // nickname reclaim is the only way back in) keeps working.
+        if (existing.role === 'owner' && !input.localMode) {
+          throw new ConflictError(`nickname "${input.nickname}" is reserved for the room owner`)
+        }
         // Reclaim by nickname (no token): return the existing identity as-is rather than rotating
         // its token. Rotating would invalidate the token already held by another browser/tab of the
         // same person, kicking it offline (this is the cross-browser "lost access" bug). Returning

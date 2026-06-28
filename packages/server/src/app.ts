@@ -542,7 +542,11 @@ export function createApp(deps: AppDeps) {
           type,
           persona_id: persona?.id ?? null,
           token: body.token ?? null,
-          reclaim: !autoNick,
+          // Credential-less nickname reclaim is only allowed in local mode. Once an owner password
+          // is set, a colliding explicit nickname must NOT silently return the existing identity —
+          // otherwise an unauthenticated client could reclaim another participant's token (e.g. join
+          // with the owner's nickname and receive the owner's role=owner participant token).
+          reclaim: !autoNick && !config.ownerPasswordHash,
           // local mode (no owner password) → a new human is role=owner; otherwise role=member
           localMode: !config.ownerPasswordHash,
         })

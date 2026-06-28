@@ -1168,6 +1168,43 @@ describe('P1a — owner in-room identity (session-aware join)', () => {
     expect(((await res.json()) as { error?: string }).error).toContain('taken')
   })
 
+  it('password mode: a tokenless join with the owner nickname is rejected, not given the owner token', async () => {
+    const app = pwApp()
+    const session = await getSession(app)
+    const roomId = await createRoomViaSession(app, session)
+    // owner establishes its role=owner in-room identity "boss"
+    const owner = await (await jpost(app, `/api/rooms/${roomId}/join`, { nickname: 'boss', type: 'human' }, session)).json() as any
+    expect(owner.role).toBe('owner')
+    // attacker: no session, no token, picks the owner's nickname → must NOT reclaim the owner identity
+    const res = await jpost(app, `/api/rooms/${roomId}/join`, { nickname: 'boss', type: 'human' })
+    expect(res.status).toBe(409)
+    expect((await res.json() as { token?: string }).token).toBeUndefined()
+  })
+
+  it('password mode: credential-less nickname reclaim is closed (member collision → 409)', async () => {
+    const app = pwApp()
+    const session = await getSession(app)
+    const roomId = await createRoomViaSession(app, session)
+    const first = await (await jpost(app, `/api/rooms/${roomId}/join`, { nickname: 'guest', type: 'human' })).json() as any
+    expect(first.role).toBe('member')
+    // a second tokenless join with the same nickname must not silently reclaim the first identity
+    const res = await jpost(app, `/api/rooms/${roomId}/join`, { nickname: 'guest', type: 'human' })
+    expect(res.status).toBe(409)
+  })
+
+  it('local mode: tokenless nickname reclaim still returns the same identity (regression guard)', async () => {
+    const app = localApp()
+    const room = await (await jpost(app, '/api/rooms', {})).json() as any
+    const first = await (await jpost(app, `/api/rooms/${room.id}/join`, { nickname: 'alice', type: 'human' })).json() as any
+    expect(first.role).toBe('owner')
+    // same nickname, no token → reclaim the existing identity (shared token), NOT a 409
+    const res = await jpost(app, `/api/rooms/${room.id}/join`, { nickname: 'alice', type: 'human' })
+    expect(res.status).toBe(200)
+    const second = await res.json() as any
+    expect(second.uid).toBe(first.uid)
+    expect(second.token).toBe(first.token)
+  })
+
   it('local mode: a human join is role=owner', async () => {
     const app = localApp()
     const room = await (await jpost(app, '/api/rooms', {})).json() as any
