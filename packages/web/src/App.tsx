@@ -35,6 +35,8 @@ export default function App() {
   const [roomId, setRoomId] = useState<string | null>(() => location.hash.slice(1) || null)
   const [showAdmin, setShowAdmin] = useState(false)
   const [showAdminLogin, setShowAdminLogin] = useState(false)
+  // bumped when the admin panel switches the LLM model, so the read-only main view re-fetches
+  const [llmVersion, setLlmVersion] = useState(0)
   // null while loading. password mode = admin login required; local mode = fully trusted (everyone admin).
   const [passwordMode, setPasswordMode] = useState<boolean | null>(null)
   const [hasSession, setHasSession] = useState(() => !!loadSessionToken())
@@ -206,7 +208,7 @@ export default function App() {
           ))}
         </nav>
         <footer>
-          <LlmStatus />
+          <LlmStatus refreshKey={llmVersion} />
           {isAdmin && (
             <button className="link" onClick={() => setShowAdmin((v) => !v)}>
               {showAdmin ? t('nav.backToChat') : t('nav.admin')}
@@ -223,6 +225,7 @@ export default function App() {
         <AdminPanel
           passwordMode={!!passwordMode}
           onLoggedOut={() => { setHasSession(false); setShowAdmin(false); setLoggedOut(true) }}
+          onLlmChange={() => setLlmVersion((v) => v + 1)}
         />
       ) : roomId ? (
         <ChatRoom key={roomId} roomId={roomId} />
@@ -320,38 +323,23 @@ function LanguageSwitcher() {
   )
 }
 
-function LlmStatus() {
+function LlmStatus({ refreshKey }: { refreshKey: number }) {
   const { t } = useI18n()
   const [info, setInfo] = useState<LlmInfo | null>(null)
 
   useEffect(() => {
     api.llm().then(setInfo).catch(console.error)
-  }, [])
+  }, [refreshKey])
 
   if (!info) return null
   if (!info.enabled) return <p className="llm-status off">{t('llm.notConfigured')}</p>
 
-  const switchModel = async (model: string) => {
-    try {
-      const next = await api.setLlmModel(model)
-      setInfo((prev) => prev && { ...prev, ...next })
-    } catch (err) {
-      console.error(err)
-    }
-  }
-
-  // keep the current model selectable even when /models omits it
-  const options = info.model && !info.models.includes(info.model) ? [info.model, ...info.models] : info.models
+  // Model switching now lives in the admin settings panel; the main view is read-only.
   return (
     <div className="llm-status">
+      <span className="llm-label">LLM</span>
       <span className="badge" title={t('llm.providerTitle')}>{info.provider}</span>
-      <select title={t('llm.modelTitle')} value={info.model ?? ''} onChange={(e) => switchModel(e.target.value)}>
-        {options.map((m) => (
-          <option key={m} value={m}>
-            {m}
-          </option>
-        ))}
-      </select>
+      <span className="llm-model" title={t('llm.modelTitle')}>{info.model ?? '—'}</span>
     </div>
   )
 }
@@ -895,7 +883,7 @@ function PendingApprovalPanel({
  * Admin panel (P1b). Only mounted when the App considers the viewer an admin. Sections that
  * only make sense in password mode (change password, session list) are hidden in local mode.
  */
-function AdminPanel({ passwordMode, onLoggedOut }: { passwordMode: boolean; onLoggedOut: () => void }) {
+function AdminPanel({ passwordMode, onLoggedOut, onLlmChange }: { passwordMode: boolean; onLoggedOut: () => void; onLlmChange: () => void }) {
   const { t } = useI18n()
   const [settings, setSettings] = useState<AdminSettings | null>(null)
   const [error, setError] = useState('')
@@ -916,7 +904,7 @@ function AdminPanel({ passwordMode, onLoggedOut }: { passwordMode: boolean; onLo
       {error && <p className="error">{error}</p>}
       {passwordMode && <PasswordSection envPinned={settings?.admin_password.env_pinned ?? false} />}
       {passwordMode && <SessionsSection onSelfRevoked={onLoggedOut} />}
-      {settings && <SettingsSection settings={settings} onChange={setSettings} />}
+      {settings && <SettingsSection settings={settings} onChange={setSettings} onLlmChange={onLlmChange} />}
       <PersonaSection />
       {passwordMode && (
         <section className="admin-section">
@@ -1018,7 +1006,7 @@ function SessionsSection({ onSelfRevoked }: { onSelfRevoked: () => void }) {
   )
 }
 
-function SettingsSection({ settings, onChange }: { settings: AdminSettings; onChange: (s: AdminSettings) => void }) {
+function SettingsSection({ settings, onChange, onLlmChange }: { settings: AdminSettings; onChange: (s: AdminSettings) => void; onLlmChange: () => void }) {
   const { t } = useI18n()
   const [brake, setBrake] = useState(String(settings.brake_after))
   const [accessPw, setAccessPw] = useState('')
@@ -1067,6 +1055,7 @@ function SettingsSection({ settings, onChange }: { settings: AdminSettings; onCh
     try {
       await api.setLlmModel(model)
       onChange(await api.adminSettings())
+      onLlmChange()
     } catch (e) {
       setError((e as Error).message)
     }
