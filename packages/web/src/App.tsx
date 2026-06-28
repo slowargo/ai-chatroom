@@ -39,6 +39,14 @@ export default function App() {
   // null while loading. password mode = owner login required; local mode = fully trusted (everyone owner).
   const [passwordMode, setPasswordMode] = useState<boolean | null>(null)
   const [hasSession, setHasSession] = useState(() => !!loadSessionToken())
+  // Transient "you have been logged out" notice, shown after the owner logs out or revokes their
+  // own current session. Auto-dismisses so it never lingers.
+  const [loggedOut, setLoggedOut] = useState(false)
+  useEffect(() => {
+    if (!loggedOut) return
+    const timer = setTimeout(() => setLoggedOut(false), 4000)
+    return () => clearTimeout(timer)
+  }, [loggedOut])
 
   // Explicit owner gating (replaces relying on silent 403s): in local mode everyone is owner; in
   // password mode the owner is whoever holds a session token. A stale token still falls back to the
@@ -152,6 +160,11 @@ export default function App() {
 
   return (
     <div className="layout">
+      {loggedOut && (
+        <div className="logout-notice" role="status" onClick={() => setLoggedOut(false)}>
+          {t('owner.loggedOut')}
+        </div>
+      )}
       {showOwnerLogin && (
         <OwnerLoginModal
           onSuccess={() => {
@@ -204,7 +217,7 @@ export default function App() {
       {showAdmin ? (
         <AdminPanel
           passwordMode={!!passwordMode}
-          onLoggedOut={() => { setHasSession(false); setShowAdmin(false) }}
+          onLoggedOut={() => { setHasSession(false); setShowAdmin(false); setLoggedOut(true) }}
         />
       ) : showPersonas ? (
         <PersonaPanel />
@@ -864,7 +877,7 @@ function AdminPanel({ passwordMode, onLoggedOut }: { passwordMode: boolean; onLo
       <h2>{t('admin.title')}</h2>
       {error && <p className="error">{error}</p>}
       {passwordMode && <PasswordSection envPinned={settings?.owner_password.env_pinned ?? false} />}
-      {passwordMode && <SessionsSection />}
+      {passwordMode && <SessionsSection onSelfRevoked={onLoggedOut} />}
       {settings && <SettingsSection settings={settings} onChange={setSettings} />}
       {passwordMode && (
         <section className="admin-section">
@@ -914,7 +927,7 @@ function PasswordSection({ envPinned }: { envPinned: boolean }) {
   )
 }
 
-function SessionsSection() {
+function SessionsSection({ onSelfRevoked }: { onSelfRevoked: () => void }) {
   const { t } = useI18n()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [error, setError] = useState('')
@@ -925,8 +938,16 @@ function SessionsSection() {
   useEffect(refresh, [refresh])
 
   const revoke = async (id: string) => {
+    // Revoking our own current session logs us out: the session token is invalid server-side after
+    // this, so don't refresh (it would 401). Clear it locally and let the App show the logged-out notice.
+    const isCurrent = sessions.find((s) => s.id === id)?.current ?? false
     try {
       await api.revokeSession(id)
+      if (isCurrent) {
+        clearSessionToken()
+        onSelfRevoked()
+        return
+      }
       refresh()
     } catch (e) {
       setError((e as Error).message)
