@@ -54,7 +54,16 @@ export default function App() {
   const isOwner = passwordMode === false || hasSession
 
   useEffect(() => {
-    api.authMode().then((m) => setPasswordMode(m.password_mode)).catch(() => setPasswordMode(false))
+    api.authMode().then((m) => {
+      setPasswordMode(m.password_mode)
+      // Local mode: drop any stale session token (e.g. left over from a prior password-mode run).
+      // The functional fix lives in api.ts (it never sends the token in local mode); this just keeps
+      // localStorage and hasSession honest instead of carrying dead state around.
+      if (!m.password_mode && loadSessionToken()) {
+        clearSessionToken()
+        setHasSession(false)
+      }
+    }).catch(() => setPasswordMode(false))
   }, [])
 
   const refreshRooms = useCallback(() => {
@@ -355,10 +364,37 @@ function LlmStatus() {
 
 function ChatRoom({ roomId }: { roomId: string }) {
   const [identity, setIdentity] = useState<Identity | null>(() => loadIdentity(roomId))
+  // Guards the async recovery window so the members poll and the SSE onerror handler can't both
+  // fire a re-join at once.
+  const recovering = useRef(false)
+  // Called when a room request rejects our stored participant token (stale — e.g. the row's token
+  // was rotated by an approve-bind from another client, leaving this browser behind). In local mode
+  // re-joining by nickname reclaims the SAME identity with its current token, healing in place. If
+  // that fails (e.g. password mode, where credential-less reclaim is disabled and returns 409), drop
+  // the stale identity and fall back to JoinGate so the user can recover manually.
+  const handleStaleIdentity = useCallback(async () => {
+    if (recovering.current) return
+    recovering.current = true
+    try {
+      const nickname = identity?.nickname ?? loadLastNickname()
+      const joined = await api.join(roomId, { nickname, type: 'human' })
+      const fresh = { uid: joined.uid, token: joined.token, nickname: joined.nickname }
+      saveIdentity(roomId, fresh)
+      setIdentity(fresh)
+    } catch {
+      localStorage.removeItem(identityKey(roomId))
+      setIdentity(null)
+    } finally {
+      recovering.current = false
+    }
+  }, [roomId, identity?.nickname])
   if (!identity) {
     return <JoinGate roomId={roomId} onJoined={setIdentity} />
   }
-  return <ChatView roomId={roomId} identity={identity} />
+  // No remount key: reclaim keeps the same uid and only swaps the token, so updating the identity
+  // prop lets ChatView's token-keyed effects re-run (SSE reconnect, refetch) and recover seamlessly
+  // while preserving the loaded events and the message draft.
+  return <ChatView roomId={roomId} identity={identity} onStaleIdentity={handleStaleIdentity} />
 }
 
 function JoinGate({ roomId, onJoined }: { roomId: string; onJoined: (id: Identity) => void }) {
@@ -408,9 +444,11 @@ function JoinGate({ roomId, onJoined }: { roomId: string; onJoined: (id: Identit
 function ChatView({
   roomId,
   identity,
+  onStaleIdentity,
 }: {
   roomId: string
   identity: Identity
+  onStaleIdentity: () => void
 }) {
   const { t } = useI18n()
   const [events, setEvents] = useState<ChatEvent[]>([])
@@ -434,8 +472,14 @@ function ChatView({
   const eventByMsgId = useMemo(() => new Map(events.map((e) => [e.msg_id, e])), [events])
 
   const refreshMembers = useCallback(() => {
-    api.members(roomId, identity.token).then(setMembers).catch(console.error)
-  }, [roomId, identity.token])
+    api.members(roomId, identity.token).then(setMembers).catch((err) => {
+      // A token-level 401/403 means our stored participant token is stale → trigger recovery.
+      // Exclude the access-gate 401 ('access password required'), which is not an identity problem
+      // and must not trigger a re-join.
+      if (isAuthError(err) && (err as Error).message !== 'access password required') onStaleIdentity()
+      else console.error(err)
+    })
+  }, [roomId, identity.token, onStaleIdentity])
 
   useEffect(() => {
     refreshMembers()

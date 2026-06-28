@@ -88,6 +88,17 @@ export interface AdminSettings {
 
 const SESSION_TOKEN_KEY = 'chatroom:session_token'
 
+/**
+ * Cached server auth mode, populated by authMode(). null until first resolved.
+ * Used to decide whether a stored session token is meaningful: in local mode the server never
+ * consults the sessions table, so sending a session token only makes ownerOnly treat it as an
+ * (invalid) participant token and 403 every owner request.
+ * Mode is process-static (decided at server startup by ownerPasswordHash presence), so this cache
+ * is intentionally never invalidated within a page session — a mode change only happens across a
+ * server restart, after which the SPA reloads and re-fetches authMode.
+ */
+let _passwordMode: boolean | null = null
+
 export function loadSessionToken(): string | null {
   try {
     return localStorage.getItem(SESSION_TOKEN_KEY)
@@ -183,6 +194,9 @@ function buildHeaders(opts: {
 
 /** Resolve the owner credential: session token if available, else fall back to participant token for local mode. */
 function ownerCredential(participantToken?: string): string | undefined {
+  // Local mode: never send a stored session token — the server would treat it as an invalid
+  // participant token and 403. Fall back to the participant token (or no token, which is allowed).
+  if (_passwordMode === false) return participantToken ?? undefined
   return loadSessionToken() ?? participantToken ?? undefined
 }
 
@@ -236,7 +250,9 @@ export const api = {
   // resolves this as the owner's in-room identity (role=owner). When not logged in, no auth header
   // is sent and join behaves as before (nickname-based human / reclaim).
   join: (roomId: string, body: { nickname: string; type: 'human'; token?: string }) =>
-    post(`/api/rooms/${roomId}/join`, body, loadSessionToken() ?? undefined)
+    // In local mode a stored session token is meaningless (and would be mis-read as a participant
+    // token), so don't send it — join then behaves as the normal nickname-based / reclaim flow.
+    post(`/api/rooms/${roomId}/join`, body, _passwordMode === false ? undefined : (loadSessionToken() ?? undefined))
       .then((r) => j<Identity & { rejoined: boolean }>(r)),
   members: (roomId: string, token: string) =>
     fetch(`/api/rooms/${roomId}/members?token=${token}`, { headers: buildHeaders() })
@@ -254,7 +270,9 @@ export const api = {
   // ---- admin: settings + session management (ownerOnly) ----
   /** Public: whether the server requires owner login (password mode) or runs in local mode. */
   authMode: () =>
-    fetch('/api/auth/mode', { headers: buildHeaders() }).then((r) => j<{ password_mode: boolean }>(r)),
+    fetch('/api/auth/mode', { headers: buildHeaders() })
+      .then((r) => j<{ password_mode: boolean }>(r))
+      .then((m) => { _passwordMode = m.password_mode; return m }),
   adminSettings: () =>
     fetch('/api/admin/settings', { headers: buildHeaders({ ownerToken: ownerCredential() }) })
       .then((r) => j<AdminSettings>(r)),
