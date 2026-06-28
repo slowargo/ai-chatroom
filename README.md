@@ -10,7 +10,7 @@ pnpm --filter @chatroom/web build   # 构建 Web UI（server 会静态托管）
 pnpm dev                            # 启动 server，默认 http://localhost:8787
 ```
 
-浏览器打开 `http://localhost:8787`：创建话题 → 输入昵称加入 → 在「人设管理」里创建人设。
+浏览器打开 `http://localhost:8787`：创建话题 → 输入昵称加入 → 在「管理设置」面板里创建人设。
 
 ## 初始化项目房间
 

@@ -33,7 +33,6 @@ export default function App() {
   const { t } = useI18n()
   const [rooms, setRooms] = useState<Room[]>([])
   const [roomId, setRoomId] = useState<string | null>(() => location.hash.slice(1) || null)
-  const [showPersonas, setShowPersonas] = useState(false)
   const [showAdmin, setShowAdmin] = useState(false)
   const [showOwnerLogin, setShowOwnerLogin] = useState(false)
   // null while loading. password mode = owner login required; local mode = fully trusted (everyone owner).
@@ -208,11 +207,8 @@ export default function App() {
         </nav>
         <footer>
           <LlmStatus />
-          <button className="link" onClick={() => { setShowPersonas((v) => !v); setShowAdmin(false) }}>
-            {showPersonas ? t('nav.backToChat') : t('nav.personaManagement')}
-          </button>
           {isOwner && (
-            <button className="link" onClick={() => { setShowAdmin((v) => !v); setShowPersonas(false) }}>
+            <button className="link" onClick={() => setShowAdmin((v) => !v)}>
               {showAdmin ? t('nav.backToChat') : t('nav.admin')}
             </button>
           )}
@@ -228,8 +224,6 @@ export default function App() {
           passwordMode={!!passwordMode}
           onLoggedOut={() => { setHasSession(false); setShowAdmin(false); setLoggedOut(true) }}
         />
-      ) : showPersonas ? (
-        <PersonaPanel />
       ) : roomId ? (
         <ChatRoom key={roomId} roomId={roomId} />
       ) : (
@@ -923,6 +917,7 @@ function AdminPanel({ passwordMode, onLoggedOut }: { passwordMode: boolean; onLo
       {passwordMode && <PasswordSection envPinned={settings?.owner_password.env_pinned ?? false} />}
       {passwordMode && <SessionsSection onSelfRevoked={onLoggedOut} />}
       {settings && <SettingsSection settings={settings} onChange={setSettings} />}
+      <PersonaSection />
       {passwordMode && (
         <section className="admin-section">
           <button className="link" onClick={logout}>{t('owner.logout')}</button>
@@ -1142,7 +1137,7 @@ function SettingsSection({ settings, onChange }: { settings: AdminSettings; onCh
   )
 }
 
-function PersonaPanel() {
+function PersonaSection() {
   const { t } = useI18n()
   const [personas, setPersonas] = useState<Persona[]>([])
   const [name, setName] = useState('')
@@ -1167,8 +1162,8 @@ function PersonaPanel() {
   }
 
   return (
-    <main className="personas">
-      <h2>{t('persona.title')}</h2>
+    <section className="admin-section">
+      <h3>{t('persona.title')}</h3>
       <p className="hint">{t('persona.hint')}</p>
       {personas.map((p) => (
         <div key={p.id} className="persona-card">
@@ -1191,6 +1186,6 @@ function PersonaPanel() {
         </button>
         {error && <p className="error">{error}</p>}
       </div>
-    </main>
+    </section>
   )
 }
