@@ -1277,10 +1277,12 @@ describe('P1b — admin (sessions / password / settings)', () => {
         brakeAfter: opts.brakeAfter ?? 3,
         port: 0,
         host: opts.host ?? '127.0.0.1',
+        llmModel: null,
         envPinned: {
           adminPasswordHash: false,
           accessPassword: false,
           brakeAfter: false,
+          llmModel: false,
           ...opts.envPinned,
         },
       },
@@ -1472,5 +1474,91 @@ describe('P1b — admin (sessions / password / settings)', () => {
       if (saved.b === undefined) delete process.env.CHATROOM_BRAKE_AFTER
       else process.env.CHATROOM_BRAKE_AFTER = saved.b
     }
+  })
+
+  // ---- LLM model persistence ----
+
+  /** Build an adminApp variant with a configured LLM (needed for /api/llm/model). */
+  function adminAppWithLlm(opts: {
+    envPinned?: Partial<RuntimeConfig['envPinned']>
+    persistSpy?: (fields: any) => void
+  } = {}) {
+    const persistCalls: any[] = []
+    const persist = (fields: any) => { persistCalls.push(fields); opts.persistSpy?.(fields) }
+    const store = new Store(openDb(':memory:'), { brakeAfter: 3 })
+    const config = new RuntimeConfig(
+      {
+        accessPassword: null,
+        adminPasswordHash: adminHash,
+        brakeAfter: 3,
+        port: 0,
+        host: '127.0.0.1',
+        llmModel: null,
+        envPinned: {
+          adminPasswordHash: false,
+          accessPassword: false,
+          brakeAfter: false,
+          llmModel: false,
+          ...opts.envPinned,
+        },
+      },
+      { allowInsecure: false, persist },
+    )
+    const llm = new Llm({ baseUrl: 'http://x', model: 'm1', provider: 'custom' })
+    const a = createApp({ store, hub: new Hub(), llm, pollWindowMs: 100, config })
+    return { app: a, config, persistCalls, llm }
+  }
+
+  it('POST /api/llm/model persists the model and GET /api/admin/settings reflects it', async () => {
+    const { app, persistCalls } = adminAppWithLlm()
+    const session = await loginSession(app)
+    const res = await req(app, '/api/llm/model', { method: 'POST', token: session, body: JSON.stringify({ model: 'm2' }) })
+    expect(res.status).toBe(200)
+    expect((await res.json() as any).model).toBe('m2')
+    // persist was called with the new model
+    expect(persistCalls.some((c) => c.llm_model === 'm2')).toBe(true)
+    // settings endpoint reflects env_pinned = false
+    const s = await (await req(app, '/api/admin/settings', { token: session })).json() as any
+    expect(s.llm.model).toBe('m2')
+    expect(s.llm.env_pinned).toBe(false)
+  })
+
+  it('POST /api/llm/model returns 409 and does not persist when env-pinned', async () => {
+    const { app, persistCalls } = adminAppWithLlm({ envPinned: { llmModel: true } })
+    const session = await loginSession(app)
+    const res = await req(app, '/api/llm/model', { method: 'POST', token: session, body: JSON.stringify({ model: 'm2' }) })
+    expect(res.status).toBe(409)
+    expect(persistCalls.some((c) => 'llm_model' in c)).toBe(false)
+    // settings endpoint reflects env_pinned = true
+    const s = await (await req(app, '/api/admin/settings', { token: session })).json() as any
+    expect(s.llm.env_pinned).toBe(true)
+  })
+})
+
+// ---- Llm.fromEnv precedence ----
+
+describe('Llm.fromEnv persistedModel precedence', () => {
+  it('uses persistedModel when env CHATROOM_LLM_MODEL is unset', () => {
+    const env: NodeJS.ProcessEnv = { CHATROOM_LLM_BASE_URL: 'http://x', CHATROOM_LLM_API_KEY: 'k' }
+    const llm = Llm.fromEnv(env, 'persisted-model')
+    expect(llm.info().model).toBe('persisted-model')
+  })
+
+  it('env CHATROOM_LLM_MODEL wins over persistedModel', () => {
+    const env: NodeJS.ProcessEnv = { CHATROOM_LLM_BASE_URL: 'http://x', CHATROOM_LLM_MODEL: 'env-model' }
+    const llm = Llm.fromEnv(env, 'persisted-model')
+    expect(llm.info().model).toBe('env-model')
+  })
+
+  it('uses preset defaultModel when both env and persistedModel are absent', () => {
+    const env: NodeJS.ProcessEnv = { DEEPSEEK_API_KEY: 'k' }
+    const llm = Llm.fromEnv(env, undefined)
+    expect(llm.info().model).toBe('deepseek-v4-flash')
+  })
+
+  it('persistedModel beats preset defaultModel', () => {
+    const env: NodeJS.ProcessEnv = { DEEPSEEK_API_KEY: 'k' }
+    const llm = Llm.fromEnv(env, 'my-saved-model')
+    expect(llm.info().model).toBe('my-saved-model')
   })
 })

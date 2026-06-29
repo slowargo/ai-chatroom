@@ -27,13 +27,14 @@ const PROVIDERS = {
 export class Llm {
   constructor(private cfg: LlmConfig = {}) {}
 
-  static fromEnv(env: NodeJS.ProcessEnv = process.env): Llm {
-    // `||` (not `??`): empty-string env values must not silently disable a preset
+  static fromEnv(env: NodeJS.ProcessEnv = process.env, persistedModel?: string): Llm {
+    // `||` (not `??`): empty-string env values must not silently disable a preset.
+    // Precedence: env > persisted > provider default.
     if (env.CHATROOM_LLM_BASE_URL) {
       return new Llm({
         baseUrl: env.CHATROOM_LLM_BASE_URL,
         apiKey: env.CHATROOM_LLM_API_KEY || undefined,
-        model: env.CHATROOM_LLM_MODEL || undefined,
+        model: env.CHATROOM_LLM_MODEL || persistedModel || undefined,
         provider: 'custom',
       })
     }
@@ -43,7 +44,7 @@ export class Llm {
         return new Llm({
           baseUrl: preset.baseUrl,
           apiKey,
-          model: env.CHATROOM_LLM_MODEL || preset.defaultModel,
+          model: env.CHATROOM_LLM_MODEL || persistedModel || preset.defaultModel,
           provider: name,
         })
       }

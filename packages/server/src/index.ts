@@ -39,7 +39,7 @@ const runtimeConfig = new RuntimeConfig(serverConfig, {
 const app = createApp({
   store,
   hub: new Hub(),
-  llm: Llm.fromEnv(),
+  llm: Llm.fromEnv(process.env, serverConfig.llmModel ?? undefined),
   pollWindowMs: Number(process.env.CHATROOM_POLL_WINDOW_MS ?? 25_000),
   webDist: existsSync(webDist) ? webDist : undefined,
   config: runtimeConfig,

@@ -76,7 +76,7 @@ export interface SessionInfo {
 
 /** Admin settings view (/api/admin/settings). `env_pinned` fields cannot be changed from the UI. */
 export interface AdminSettings {
-  llm: LlmInfo
+  llm: LlmInfo & { env_pinned?: boolean }
   brake_after: number
   brake: { env_pinned: boolean }
   access_gate: { enabled: boolean; env_pinned: boolean; can_disable: boolean }

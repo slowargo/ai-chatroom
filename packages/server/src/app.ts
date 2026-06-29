@@ -136,7 +136,8 @@ export function createApp(deps: AppDeps) {
         brakeAfter: 3,
         port: 0,
         host: '127.0.0.1',
-        envPinned: { adminPasswordHash: false, accessPassword: false, brakeAfter: false },
+        llmModel: null,
+        envPinned: { adminPasswordHash: false, accessPassword: false, brakeAfter: false, llmModel: false },
       },
       { allowInsecure: true, persist: () => {} },
     )
@@ -907,7 +908,9 @@ export function createApp(deps: AppDeps) {
     const body = (await c.req.json().catch(() => ({}))) as { model?: string }
     const model = typeof body.model === 'string' ? body.model.trim() : ''
     if (!model) return c.json({ error: 'model is required' }, 400)
+    if (config.envPinned.llmModel) return c.json({ error: 'llm model is pinned by an environment variable' }, 409)
     llm.setModel(model)
+    config.setLlmModel(model)
     return c.json(llm.info())
   })
 
@@ -925,7 +928,7 @@ export function createApp(deps: AppDeps) {
   const settingsView = async () => {
     const models = await llm.listModels()
     return {
-      llm: { ...llm.info(), models },
+      llm: { ...llm.info(), models, env_pinned: config.envPinned.llmModel },
       brake_after: config.brakeAfter,
       brake: { env_pinned: config.envPinned.brakeAfter },
       access_gate: {

@@ -21,6 +21,8 @@ interface ConfigFile {
     host?: string
     /** mute agent-to-agent mentions after this many consecutive agent messages */
     brake_after?: number
+    /** Persisted LLM model chosen via admin UI; ignored when CHATROOM_LLM_MODEL pins it. */
+    llm_model?: string
   }
   servers?: Record<string, { password?: string }>
 }
@@ -70,6 +72,8 @@ export interface ServerConfig {
   adminPasswordHash: string | null
   /** mute agent-to-agent mentions after this many consecutive agent messages */
   brakeAfter: number
+  /** LLM model to use at startup; null means use the provider default. */
+  llmModel: string | null
   /**
    * Which fields are pinned by an environment variable. A pinned field cannot be changed from the
    * admin UI (the env wins on restart, so a runtime write to config.json would silently no-op).
@@ -78,6 +82,7 @@ export interface ServerConfig {
     adminPasswordHash: boolean
     accessPassword: boolean
     brakeAfter: boolean
+    llmModel: boolean
   }
 }
 
@@ -172,6 +177,7 @@ export async function loadServerConfig(): Promise<ServerConfig> {
   // CHATROOM_BRAKE_AFTER="" → Number('')=0 → brake engages on the very first agent message.
   const accessEnv = process.env.CHATROOM_ACCESS_PASSWORD || undefined
   const brakeEnv = process.env.CHATROOM_BRAKE_AFTER || undefined
+  const modelEnv = process.env.CHATROOM_LLM_MODEL || undefined
   const accessEnvPinned = accessEnv !== undefined
   const brakeEnvPinned = brakeEnv !== undefined
 
@@ -181,10 +187,12 @@ export async function loadServerConfig(): Promise<ServerConfig> {
     host: process.env.CHATROOM_HOST ?? file.server?.host ?? '127.0.0.1',
     adminPasswordHash,
     brakeAfter: Number(brakeEnv ?? file.server?.brake_after ?? 3),
+    llmModel: modelEnv ?? file.server?.llm_model ?? null,
     envPinned: {
       adminPasswordHash: adminEnvPinned,
       accessPassword: accessEnvPinned,
       brakeAfter: brakeEnvPinned,
+      llmModel: modelEnv !== undefined,
     },
   }
 }
@@ -245,5 +253,14 @@ export class RuntimeConfig {
   setBrakeAfter(n: number): void {
     this._brakeAfter = n
     this.persist({ brake_after: n })
+  }
+
+  /**
+   * Persist the LLM model chosen via admin UI. Caller must guard envPinned.llmModel.
+   * Persists only — does NOT update in-memory state; the live Llm instance already holds the
+   * current model. The persisted value is re-read at startup via Llm.fromEnv(env, llmModel).
+   */
+  setLlmModel(model: string): void {
+    this.persist({ llm_model: model })
   }
 }

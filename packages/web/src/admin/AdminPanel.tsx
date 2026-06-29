@@ -202,11 +202,12 @@ function SettingsSection({ settings, onChange, onLlmChange }: { settings: AdminS
       {llm.enabled && (
         <div className="setting-row">
           <label title={t('admin.settings.modelTip')}>{t('admin.settings.model')}</label>
-          <select value={llm.model ?? ''} onChange={(e) => switchModel(e.target.value)}>
+          <select value={llm.model ?? ''} disabled={llm.env_pinned} onChange={(e) => switchModel(e.target.value)}>
             {modelOptions.map((m) => (
               <option key={m} value={m}>{m}</option>
             ))}
           </select>
+          {llm.env_pinned && <span className="hint">{t('admin.settings.envPinned')}</span>}
         </div>
       )}
 
