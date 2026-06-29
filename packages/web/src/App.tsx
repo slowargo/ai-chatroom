@@ -198,7 +198,6 @@ export default function App() {
           ))}
         </nav>
         <footer>
-          <LanguageSwitcher />
           {isAdmin && (
             <button className="link" onClick={() => setShowAdmin((v) => !v)}>
               {showAdmin ? t('nav.backToChat') : t('nav.admin')}
@@ -208,7 +207,10 @@ export default function App() {
             <button className="link" onClick={() => setShowAdminLogin(true)}>{t('admin.login')}</button>
           )}
           <LlmStatus refreshKey={llmVersion} />
-          <span className="version">v{version}</span>
+          <div className="footer-row">
+            <span className="version">v{version}</span>
+            <LanguageSwitcher />
+          </div>
         </footer>
       </aside>
       {showAdmin ? (
