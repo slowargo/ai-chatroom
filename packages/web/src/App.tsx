@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { version } from '../package.json'
 import {
   api,
@@ -689,7 +689,11 @@ function ChatView({
   )
 }
 
-function EventLine({
+// Memoized: typing in the composer re-renders ChatView on every keystroke, but the message list
+// props (events/members-derived maps) stay referentially stable across keystrokes, so each line
+// skips re-rendering — and crucially skips re-parsing its markdown. Without this, every keystroke
+// re-parsed every message's markdown, so typing got linearly slower as the room filled up.
+const EventLine = memo(function EventLine({
   ev,
   eventByMsgId,
   memberByUid,
@@ -734,7 +738,7 @@ function EventLine({
       </div>
     </div>
   )
-}
+})
 
 function PendingApprovalPanel({
   roomId,
