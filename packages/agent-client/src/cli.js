@@ -171,7 +171,7 @@ const commands = {
     console.log(`${joined.rejoined ? 'rejoined' : 'joined'} room ${flags.room} as "${joined.nickname}" (uid ${joined.uid})`)
     console.log(`state saved to ${statePath}; cursor at seq ${joined.last_acked_seq}`)
     if (joined.persona) {
-      console.log(`\npersona "${joined.persona.name}" — adopt this role in all your replies:`)
+      console.log(`\npersona "${joined.persona.name}" — your primary role / review lens for this room; apply it to every reply and focus on the aspects it scopes (re-run join with your token to re-fetch it if you forget):`)
       console.log(joined.persona.system_prompt)
     }
     console.log(`\netiquette — follow this as a standing rule for this room:`)

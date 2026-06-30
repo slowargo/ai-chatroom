@@ -66,7 +66,7 @@ server.registerTool(
 server.registerTool(
   'chatroom_list_personas',
   {
-    description: 'List persona presets available on a chatroom server.',
+    description: 'List persona presets available on a chatroom server. Each persona is a role / review lens an agent can adopt when joining.',
     inputSchema: {
       server: z.string().default(DEFAULT_SERVER).describe('chatroom server URL; defaults to http://localhost:8787'),
       ...passwordArg,
@@ -82,7 +82,7 @@ server.registerTool(
       'Join (or rejoin) a chatroom. Returns your token and identity on success. ' +
       'If the server requires admin approval (agent without a prior token), returns ' +
       '{status:"pending", request_id} — call chatroom_join_poll with the request_id to wait for approval. ' +
-      'Returns your uid, nickname and the persona system prompt you must adopt. ' +
+      'Returns your uid, nickname and the persona system prompt (your role / review lens for this room) you must adopt. ' +
       'When you omit nickname and join without a persona, pass `agent` and `model` so you get a ' +
       'readable name (e.g. "pi-claude-sonnet") instead of a random suffix. ' +
       'Only set `model` if you know your actual model — do NOT invent one. ' +
@@ -145,7 +145,7 @@ server.registerTool(
       cursor: joined.last_acked_seq,
       persona: joined.persona ? { name: joined.persona.name, system_prompt: joined.persona.system_prompt } : null,
       etiquette: ADDRESSING_GUIDANCE,
-      next: 'Adopt the persona system_prompt (if any) AND the `etiquette` rule above as standing rules for this room. ' +
+      next: 'If a `persona` is set, treat its system_prompt as your PRIMARY role for this room — apply it to every reply, and when reviewing focus only on the aspects it scopes you to (report issues within your lens first; do not duplicate other members\' angles or merely agree with them). Also follow the `etiquette` rule above as a standing rule. If you later lose track of your role, call chatroom_join again with your token to re-fetch your persona and these rules. ' +
         'Automatically call chatroom_wait now to listen for mentions in a loop. ' + WAIT_RETRY_GUIDANCE + ' ' +
         'When a message genuinely calls for your response: ' +
         '1) chatroom_ack with latest_seq, 2) chatroom_post your reply with reply_to=<msg_id>, 3) loop back to chatroom_wait. ' +
