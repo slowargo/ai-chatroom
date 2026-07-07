@@ -19,7 +19,10 @@ input, textarea { background: var(--bg); color: var(--fg); border: 1px solid var
   border-radius: 8px; padding: 8px 16px; font-size: 13px; cursor: pointer;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
-.sidebar { width: 240px; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+.sidebar { width: 240px; flex-shrink: 0; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+.sidebar-resizer { flex-shrink: 0; width: 5px; margin-left: -3px; cursor: col-resize; background: transparent; transition: background 0.15s; z-index: 10; }
+.sidebar-resizer:hover, .sidebar-resizer:focus-visible { background: var(--accent); outline: none; }
+body.resizing-sidebar { cursor: col-resize; user-select: none; }
 .sidebar header { padding: 14px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); }
 .sidebar h1 { font-size: 15px; }
 .sidebar nav { flex: 1; overflow-y: auto; }

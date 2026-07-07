@@ -92,6 +92,7 @@ const messages: Record<Locale, Dict> = {
     'admin.sessions.titleTip': '管理各设备的系统管理员登录会话，可单独吊销；吊销当前会话将导致本机登出。',
     'persona.titleTip': '管理可供 agent 选用的人设；加入房间时通过 persona id 指定（chatroom join --persona）。',
     'lang.label': '语言',
+    'sidebar.resize': '拖动调整侧边栏宽度（方向键微调，双击或 Home 重置）',
   },
   en: {
     'app.title': 'AI Chatroom',
@@ -170,6 +171,7 @@ const messages: Record<Locale, Dict> = {
     'admin.sessions.titleTip': 'Manage admin login sessions across devices, revoking any individually; revoking the current session logs out this device.',
     'persona.titleTip': 'Manage the personas agents can choose from; specify one by persona id when joining a room (chatroom join --persona).',
     'lang.label': 'Language',
+    'sidebar.resize': 'Drag to resize sidebar (arrow keys to adjust, double-click or Home to reset)',
   },
   'zh-TW': {
     'app.title': 'AI Chatroom',
@@ -248,6 +250,7 @@ const messages: Record<Locale, Dict> = {
     'admin.sessions.titleTip': '管理各裝置的系統管理員登入工作階段，可單獨撤銷；撤銷目前工作階段將導致本機登出。',
     'persona.titleTip': '管理可供 agent 選用的人設；加入房間時透過 persona id 指定（chatroom join --persona）。',
     'lang.label': '語言',
+    'sidebar.resize': '拖曳調整側邊欄寬度（方向鍵微調，雙擊或 Home 重設）',
   },
 }
 

@@ -19,6 +19,17 @@ import { LlmStatus } from './components/LlmStatus'
 // Initialize access password from localStorage on module load
 initAccessPassword()
 
+const SIDEBAR_WIDTH_KEY = 'chatroom.sidebarWidth'
+const SIDEBAR_MIN_WIDTH = 180
+const SIDEBAR_MAX_WIDTH = 480
+const SIDEBAR_DEFAULT_WIDTH = 240
+
+function loadSidebarWidth(): number {
+  const raw = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY))
+  if (!Number.isFinite(raw) || raw <= 0) return SIDEBAR_DEFAULT_WIDTH
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, raw))
+}
+
 export default function App() {
   const { t } = useI18n()
   const [rooms, setRooms] = useState<Room[]>([])
@@ -30,6 +41,7 @@ export default function App() {
   // null while loading. password mode = admin login required; local mode = fully trusted (everyone admin).
   const [passwordMode, setPasswordMode] = useState<boolean | null>(null)
   const [hasSession, setHasSession] = useState(() => !!loadSessionToken())
+  const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth)
   // Transient "you have been logged out" notice, shown after the admin logs out or revokes their
   // own current session. Auto-dismisses so it never lingers.
   const [loggedOut, setLoggedOut] = useState(false)
@@ -158,6 +170,45 @@ export default function App() {
     void doDeleteRoom(id)
   }
 
+  // Resize the sidebar to a clamped width and persist it so it survives reloads. Used by the
+  // keyboard handler and the double-click reset; the live mouse drag skips per-pixel writes and
+  // persists once on release (see the drag effect below).
+  const applySidebarWidth = useCallback((raw: number) => {
+    const next = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, raw))
+    setSidebarWidth(next)
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next))
+  }, [])
+
+  // Mouse-drag resize. The listeners live in an effect keyed on `dragging` so they are always torn
+  // down on unmount (or when the drag ends), never leaking the global cursor/user-select override.
+  const [dragging, setDragging] = useState(false)
+  const dragStart = useRef({ x: 0, width: 0 })
+  const widthRef = useRef(sidebarWidth)
+  widthRef.current = sidebarWidth
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault()
+    dragStart.current = { x: e.clientX, width: sidebarWidth }
+    setDragging(true)
+  }
+  useEffect(() => {
+    if (!dragging) return
+    const onMove = (ev: MouseEvent) => {
+      const { x, width } = dragStart.current
+      const next = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width + ev.clientX - x))
+      setSidebarWidth(next)
+    }
+    const onUp = () => setDragging(false)
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    document.body.classList.add('resizing-sidebar')
+    return () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.classList.remove('resizing-sidebar')
+      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(widthRef.current))
+    }
+  }, [dragging])
+
   return (
     <div className="layout">
       {loggedOut && (
@@ -177,7 +228,7 @@ export default function App() {
           onClose={() => { retryAfterLogin.current = null; setShowAdminLogin(false) }}
         />
       )}
-      <aside className="sidebar">
+      <aside className="sidebar" style={{ width: sidebarWidth }}>
         <header>
           <h1>{t('app.title')}</h1>
           {isAdmin && <button onClick={createRoom}>{t('room.new')}</button>}
@@ -213,6 +264,26 @@ export default function App() {
           </div>
         </footer>
       </aside>
+      <div
+        className="sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={t('sidebar.resize')}
+        aria-valuenow={sidebarWidth}
+        aria-valuemin={SIDEBAR_MIN_WIDTH}
+        aria-valuemax={SIDEBAR_MAX_WIDTH}
+        tabIndex={0}
+        onMouseDown={startResize}
+        onDoubleClick={() => applySidebarWidth(SIDEBAR_DEFAULT_WIDTH)}
+        onKeyDown={(e) => {
+          const step = e.shiftKey ? 32 : 8
+          if (e.key === 'ArrowLeft') applySidebarWidth(sidebarWidth - step)
+          else if (e.key === 'ArrowRight') applySidebarWidth(sidebarWidth + step)
+          else if (e.key === 'Home') applySidebarWidth(SIDEBAR_DEFAULT_WIDTH)
+          else return
+          e.preventDefault()
+        }}
+      />
       {showAdmin ? (
         <AdminPanel
           passwordMode={!!passwordMode}
